@@ -13,6 +13,7 @@ struct RegionConfig: Codable {
 struct AppConfig: Codable {
     var regions: [String: RegionConfig] = [:]
     var overlayFrame: RegionConfig?
+    var sourceWindowHint: String = "NBB"
 
     static let saveURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -70,6 +71,51 @@ func captureRegion(_ rect: CGRect) async -> CGImage? {
         print("⚠️  Capture failed: \(error)")
         return nil
     }
+}
+
+func findWindow(titleContains hint: String) async -> SCWindow? {
+    do {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        let match = content.windows.filter { win in
+            let title = (win.title ?? "").lowercased()
+            let app = (win.owningApplication?.applicationName ?? "").lowercased()
+            let h = hint.lowercased()
+            return !h.isEmpty && (title.contains(h) || app.contains(h))
+        }
+        // Prefer largest matching window.
+        return match.max(by: { ($0.frame.width * $0.frame.height) < ($1.frame.width * $1.frame.height) })
+    } catch {
+        print("⚠️  Window discovery failed: \(error)")
+        return nil
+    }
+}
+
+func captureWindowImage(_ window: SCWindow) async -> CGImage? {
+    do {
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let config = SCStreamConfiguration()
+        config.width = max(1, Int(window.frame.width))
+        config.height = max(1, Int(window.frame.height))
+        config.scalesToFit = false
+        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+    } catch {
+        print("⚠️  Window capture failed: \(error)")
+        return nil
+    }
+}
+
+func cropWindowImage(_ image: CGImage, windowFrame: CGRect, globalRect: CGRect) -> CGImage? {
+    let relX = globalRect.origin.x - windowFrame.origin.x
+    let relYFromTop = globalRect.origin.y - windowFrame.origin.y
+    let cropRect = CGRect(
+        x: relX,
+        y: relYFromTop,
+        width: globalRect.width,
+        height: globalRect.height
+    ).integral
+    let bounded = cropRect.intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    guard bounded.width > 1, bounded.height > 1 else { return nil }
+    return image.cropping(to: bounded)
 }
 
 // MARK: - OCR
@@ -230,6 +276,7 @@ final class OverlayTableWindow: NSWindowController {
     private var labels: [String: NSTextField] = [:]
     private var currentValues: [String: String] = [:]
     private var valueKeys: [String] = []
+    private var baseValueFontSize: CGFloat = 14
     private var valueFontSize: CGFloat = 14
     private var valueFontWeight: NSFont.Weight = .regular
     private let minValueFontSize: CGFloat = 6
@@ -286,6 +333,7 @@ final class OverlayTableWindow: NSWindowController {
         let topColW = W / CGFloat(topCols.count)
         let botColW = W / CGFloat(botCols.count)
         let fontSize = max(10, min(tRowH * 0.55, 22))
+        baseValueFontSize = fontSize
         valueFontSize = fontSize
         let hdrSize  = max(8, fontSize * 0.65)
 
@@ -371,7 +419,8 @@ final class OverlayTableWindow: NSWindowController {
 
     private func updateAllValueFonts() {
         guard !valueKeys.isEmpty else { return }
-        var fittedSize = valueFontSize
+        // Recompute from the max/base size each time so fonts can grow back.
+        var fittedSize = baseValueFontSize
 
         while fittedSize > minValueFontSize {
             let font = NSFont.monospacedDigitSystemFont(ofSize: fittedSize, weight: valueFontWeight)
@@ -462,9 +511,10 @@ final class ControlWindow: NSWindowController, DragPickerDelegate {
     private let startStopBtn    = NSButton()
     private let statusLbl       = NSTextField(labelWithString: "Set regions then press Start")
     private let overlayBtn      = NSButton()
+    private let sourceHintField = NSTextField(string: "")
     private var overlayFrameLbl = NSTextField(labelWithString: "Not set")
 
-    var onStart: (([String: CGRect]) -> Void)?
+    var onStart: (([String: CGRect], String) -> Void)?
     var onStop:  (() -> Void)?
     var onOverlayFrameChanged: ((CGRect) -> Void)?
 
@@ -521,6 +571,19 @@ final class ControlWindow: NSWindowController, DragPickerDelegate {
         let overlayRow = NSStackView(views: [overlayBtn, overlayFrameLbl])
         overlayRow.spacing = 10
         outer.addArrangedSubview(overlayRow)
+
+        // Source window hint
+        let srcLbl = NSTextField(labelWithString: "Source window title/app contains:")
+        srcLbl.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        srcLbl.textColor = NSColor(white: 0.65, alpha: 1)
+        sourceHintField.stringValue = config.sourceWindowHint
+        sourceHintField.font = NSFont.systemFont(ofSize: 12)
+        sourceHintField.target = self
+        sourceHintField.action = #selector(sourceHintChanged)
+        let srcRow = NSStackView(views: [srcLbl, sourceHintField])
+        srcRow.spacing = 8
+        srcRow.alignment = .centerY
+        outer.addArrangedSubview(srcRow)
 
         // Start/stop
         startStopBtn.bezelStyle = .rounded
@@ -630,13 +693,22 @@ final class ControlWindow: NSWindowController, DragPickerDelegate {
         isRunning.toggle(); updateButtonState()
         if isRunning {
             let rects = config.regions.mapValues { $0.cgRect }
-            onStart?(rects)
+            let hint = sourceHintField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            config.sourceWindowHint = hint.isEmpty ? "NBB" : hint
+            config.save()
+            onStart?(rects, config.sourceWindowHint)
             let total = (topRows * topCols.count) + (botRows * botCols.count)
-            statusLbl.stringValue = "Running — \(rects.count)/\(total) regions active"
+            statusLbl.stringValue = "Running — \(rects.count)/\(total) regions active (source: \(config.sourceWindowHint))"
         } else {
             onStop?()
             statusLbl.stringValue = "Stopped"
         }
+    }
+
+    @objc private func sourceHintChanged() {
+        config.sourceWindowHint = sourceHintField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if config.sourceWindowHint.isEmpty { config.sourceWindowHint = "NBB" }
+        config.save()
     }
 
     private func updateButtonState() {
@@ -654,6 +726,7 @@ final class AppCoordinator {
     private let overlay  = OverlayTableWindow()
     private var timer:   Timer?
     private var regions: [String: CGRect] = [:]
+    private var sourceWindowHint: String = "NBB"
 
     init() {
         // Apply saved overlay position immediately
@@ -666,8 +739,9 @@ final class AppCoordinator {
         controls.onOverlayFrameChanged = { [weak self] rect in
             self?.overlay.setFrame(rect)
         }
-        controls.onStart = { [weak self] rects in
+        controls.onStart = { [weak self] rects, hint in
             self?.regions = rects
+            self?.sourceWindowHint = hint
             self?.overlay.show()
             self?.startPolling()
         }
@@ -686,7 +760,19 @@ final class AppCoordinator {
 
     private func tick() {
         let snapshot = regions
+        let hint = sourceWindowHint
         Task {
+            if let window = await findWindow(titleContains: hint),
+               let windowImage = await captureWindowImage(window) {
+                for (key, rect) in snapshot {
+                    let image = cropWindowImage(windowImage, windowFrame: window.frame, globalRect: rect)
+                    let value = image.map(recognizeText(in:)) ?? ""
+                    await self.overlay.updateValue(key: key, value: value)
+                }
+                return
+            }
+
+            // Fallback: visible display capture if source window is missing/minimized.
             for (key, rect) in snapshot {
                 guard let image = await captureRegion(rect) else { continue }
                 let value = recognizeText(in: image)
