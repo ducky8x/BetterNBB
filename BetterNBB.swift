@@ -14,6 +14,7 @@ struct NBBState {
         var location : String { "(\(chunkX * 16 + 4), \(chunkZ * 16 + 4))" }
         var certPct  : String { String(format: "%.1f%%", certainty * 100) }
         var dist     : String { String(format: "%.0f", overworldDist) }
+        var netherDist: String { String(format: "%.0f", overworldDist / 8.0) }
         var nether   : String { "(\(chunkX * 2), \(chunkZ * 2))" }
         var angleStr : String {
             guard let angle else { return "--" }
@@ -109,6 +110,7 @@ struct OverlayConfig: Codable {
     var showPct    : Bool = true
     var showDist   : Bool = true
     var showNether : Bool = true
+    var showNetherDist: Bool = true
     var showAngle  : Bool = true
 
     // Eye throw columns
@@ -820,6 +822,8 @@ final class OverlayWindow: NSWindowController {
                     lbl.textColor = v > 50 ? .systemGreen : v > 10 ? .systemOrange : .systemRed
                 case "dist":
                     lbl.stringValue = p.dist; lbl.textColor = .white
+                case "netherDist":
+                    lbl.stringValue = p.netherDist; lbl.textColor = .white
                 case "nether":
                     lbl.stringValue = p.nether; lbl.textColor = .white
                 case "angle":
@@ -932,9 +936,26 @@ final class OverlayWindow: NSWindowController {
 
         let forwardWord = forward >= 0 ? "Forward" : "Back"
         let sideWord = left >= 0 ? "Left" : "Right"
-        lbl.stringValue = String(format: "%@ %.0f blocks   %@ %.0f blocks",
-                                 forwardWord, abs(forward), sideWord, abs(left))
+        let parts = [
+            movementHintPart(label: forwardWord, overworldBlocks: abs(forward), player: player),
+            movementHintPart(label: sideWord, overworldBlocks: abs(left), player: player)
+        ].compactMap { $0 }
+        lbl.stringValue = parts.isEmpty ? "At target" : parts.joined(separator: "   ")
         lbl.textColor = NSColor(white: 0.74, alpha: 1)
+    }
+
+    private func movementHintPart(label: String,
+                                  overworldBlocks: Double,
+                                  player: NBBState.PlayerPosition) -> String? {
+        let ow = abs(overworldBlocks)
+        let nether = ow / 8.0
+        let primary = player.isInNether ? nether : ow
+        guard primary.rounded() != 0 else { return nil }
+
+        if player.isInNether {
+            return String(format: "%@ %.0f (OW %.0f)", label, nether, ow)
+        }
+        return String(format: "%@ %.0f (N %.0f)", label, ow, nether)
     }
 
     private func applyBestBodyFont(preds: [NBBState.Prediction], pCols: [Col], eCols: [Col]) {
@@ -1002,6 +1023,7 @@ final class OverlayWindow: NSWindowController {
         case "loc": return pred.location
         case "pct": return pred.certPct
         case "dist": return pred.dist
+        case "netherDist": return pred.netherDist
         case "nether": return pred.nether
         case "angle": return predictionAngleText(pred, state: state)
         default: return ""
@@ -1072,11 +1094,12 @@ final class OverlayWindow: NSWindowController {
     // Column lists driven by config
     private func predCols() -> [Col] {
         var c = [Col]()
-        if cfg.showLoc    { c.append(Col(header: "Location", key: "loc",    weight: 1.25)) }
-        if cfg.showPct    { c.append(Col(header: "%",        key: "pct",    weight: 0.85)) }
-        if cfg.showDist   { c.append(Col(header: "Dist.",    key: "dist",   weight: 0.75)) }
-        if cfg.showNether { c.append(Col(header: "Nether",   key: "nether", weight: 1.15)) }
-        if cfg.showAngle  { c.append(Col(header: "Angle",    key: "angle",  weight: 1.15)) }
+        if cfg.showDist       { c.append(Col(header: "Dist.",       key: "dist",       weight: 0.65)) }
+        if cfg.showLoc        { c.append(Col(header: "Location",    key: "loc",        weight: 1.20)) }
+        if cfg.showPct        { c.append(Col(header: "%",           key: "pct",        weight: 0.78)) }
+        if cfg.showNether     { c.append(Col(header: "Nether",      key: "nether",     weight: 1.05)) }
+        if cfg.showNetherDist { c.append(Col(header: "Nether Dist.", key: "netherDist", weight: 0.82)) }
+        if cfg.showAngle      { c.append(Col(header: "Angle",       key: "angle",      weight: 1.20)) }
         return c
     }
 
@@ -1110,6 +1133,7 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
     private let chkPct      = check("%")
     private let chkDist     = check("Dist.")
     private let chkNether   = check("Nether")
+    private let chkNetherDist = check("Nether Dist.")
     private let chkAngle    = check("Angle")
     private let chkEyeX     = check("x")
     private let chkEyeZ     = check("z")
@@ -1119,7 +1143,7 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
     private let chkEyeMarker = check("Boat dot")
     private let chkHideZero = check("Hide 0% predictions")
     private let chkInfoMsgs = check("Show NBB messages")
-    private let chkMoveHint = check("Show movement hint")
+    private let chkMoveHint = check("Show movement hint (Can invalidate RSG runs)")
     private let connLbl     = NSTextField(labelWithString: "⚠️  Not connected to NBB")
 
     init() {
@@ -1178,7 +1202,7 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
 
         // Prediction columns
         outer.addArrangedSubview(sectionLbl("STRONGHOLD COLUMNS"))
-        for b in [chkLoc, chkPct, chkDist, chkNether, chkAngle] {
+        for b in [chkDist, chkLoc, chkPct, chkNether, chkNetherDist, chkAngle] {
             b.target = self; b.action = #selector(anyChanged); outer.addArrangedSubview(b)
         }
 
@@ -1207,6 +1231,7 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
         chkPct.state      = cfg.showPct      ? .on : .off
         chkDist.state     = cfg.showDist     ? .on : .off
         chkNether.state   = cfg.showNether   ? .on : .off
+        chkNetherDist.state = cfg.showNetherDist ? .on : .off
         chkAngle.state    = cfg.showAngle    ? .on : .off
         chkEyeX.state     = cfg.showEyeX     ? .on : .off
         chkEyeZ.state     = cfg.showEyeZ     ? .on : .off
@@ -1232,6 +1257,7 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
         cfg.showPct       = chkPct.state      == .on
         cfg.showDist      = chkDist.state     == .on
         cfg.showNether    = chkNether.state   == .on
+        cfg.showNetherDist = chkNetherDist.state == .on
         cfg.showAngle     = chkAngle.state    == .on
         cfg.showEyeX      = chkEyeX.state     == .on
         cfg.showEyeZ      = chkEyeZ.state     == .on
