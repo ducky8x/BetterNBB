@@ -12,6 +12,7 @@ struct RegionConfig: Codable {
 
 struct AppConfig: Codable {
     var regions: [String: RegionConfig] = [:]
+    var overlayFrame: RegionConfig?
 
     static let saveURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -34,22 +35,35 @@ struct AppConfig: Codable {
 
 // MARK: - Screen Capture
 
+private func virtualDesktopFrame() -> CGRect {
+    NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
+}
+
 func captureRegion(_ rect: CGRect) async -> CGImage? {
-    guard let screen = NSScreen.main else { return nil }
-    let flipped = CGRect(
+    let captureRect = CGRect(
         x: rect.origin.x,
-        y: screen.frame.height - rect.origin.y - rect.height,
+        y: rect.origin.y,
         width: max(1, rect.width),
         height: max(1, rect.height)
     )
     do {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first else { return nil }
+        let center = CGPoint(x: captureRect.midX, y: captureRect.midY)
+        guard let display = content.displays.first(where: { $0.frame.contains(center) }) ?? content.displays.first
+        else { return nil }
+
+        // sourceRect is relative to the chosen display, in the same global orientation.
+        let sourceRect = CGRect(
+            x: captureRect.origin.x - display.frame.origin.x,
+            y: captureRect.origin.y - display.frame.origin.y,
+            width: captureRect.width,
+            height: captureRect.height
+        )
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let config = SCStreamConfiguration()
-        config.sourceRect  = flipped
-        config.width       = max(1, Int(rect.width))
-        config.height      = max(1, Int(rect.height))
+        config.sourceRect  = sourceRect
+        config.width       = max(1, Int(captureRect.width))
+        config.height      = max(1, Int(captureRect.height))
         config.scalesToFit = false
         return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     } catch {
@@ -60,62 +74,63 @@ func captureRegion(_ rect: CGRect) async -> CGImage? {
 
 // MARK: - OCR
 
-func recognizeNumber(in image: CGImage) -> String {
+func recognizeText(in image: CGImage) -> String {
     let req = VNRecognizeTextRequest()
     req.recognitionLevel       = .accurate
     req.usesLanguageCorrection = false
     req.recognitionLanguages   = ["en-US"]
     try? VNImageRequestHandler(cgImage: image).perform([req])
-    let raw = req.results?
+    return req.results?
         .compactMap { $0.topCandidates(1).first?.string }
-        .joined(separator: " ") ?? ""
-    return raw.components(separatedBy: .whitespaces)
-        .first { !$0.isEmpty && $0.allSatisfy { "0123456789.-+%(),".contains($0) } } ?? ""
+        .joined(separator: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        ?? ""
 }
 
 // MARK: - Layout constants
 
-// Top table: Location | % | Dist. | Nether | Angle  (2 data rows)
 let topCols: [(header: String, key: String)] = [
     ("Location", "loc"), ("%", "pct"), ("Dist.", "dist"), ("Nether", "nether"), ("Angle", "angle")
 ]
 let topRows = 2
 
-// Bottom table: x | z | Angle | Error  (3 data rows)
 let botCols: [(header: String, key: String)] = [
     ("x", "x"), ("z", "z"), ("Angle", "angle"), ("Error", "error")
 ]
 let botRows = 3
 
-func cellKey(section: String, row: Int, col: String) -> String {
-    "\(section)_r\(row)_\(col)"
+func cellKey(section: String, row: Int, col: String) -> String { "\(section)_r\(row)_\(col)" }
+
+// MARK: - Generic Drag Picker
+// Used for both cell regions and overlay placement.
+
+protocol DragPickerDelegate: AnyObject {
+    func dragPicker(_ picker: DragPicker, didSelect rect: CGRect, tag: String)
 }
 
-// MARK: - Region Picker
-
-protocol RegionPickerDelegate: AnyObject {
-    func regionPicker(_ picker: RegionPicker, didSelect rect: CGRect, forKey key: String)
-}
-
-final class RegionPicker: NSWindowController {
-    weak var delegate: RegionPickerDelegate?
-    let key: String
+final class DragPicker: NSWindowController {
+    weak var delegate: DragPickerDelegate?
+    let tag: String
+    private let instruction: String
     private var startPoint: NSPoint = .zero
     private var selectionView: NSView?
+    private let desktopFrame: CGRect
 
-    init(key: String) {
-        self.key = key
-        let screen = NSScreen.main?.frame ?? .zero
-        let win = NSWindow(contentRect: screen, styleMask: .borderless, backing: .buffered, defer: false)
+    init(tag: String, instruction: String) {
+        self.tag         = tag
+        self.instruction = instruction
+        self.desktopFrame = virtualDesktopFrame()
+        let win = NSWindow(contentRect: desktopFrame, styleMask: .borderless,
+                           backing: .buffered, defer: false)
         win.level           = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)))
-        win.backgroundColor = NSColor.black.withAlphaComponent(0.4)
+        win.backgroundColor = NSColor.black.withAlphaComponent(0.35)
         win.isOpaque        = false
         super.init(window: win)
 
-        let lbl = NSTextField(labelWithString: "Drag to select: \(key)   •   ESC to cancel")
+        let lbl = NSTextField(labelWithString: "\(instruction)   •   ESC to cancel")
         lbl.font = NSFont.systemFont(ofSize: 15, weight: .medium)
         lbl.textColor = .white; lbl.backgroundColor = .clear; lbl.sizeToFit()
-        lbl.setFrameOrigin(NSPoint(x: (screen.width - lbl.frame.width) / 2, y: screen.height - 60))
+        lbl.setFrameOrigin(NSPoint(x: (desktopFrame.width - lbl.frame.width) / 2, y: desktopFrame.height - 60))
         win.contentView?.addSubview(lbl)
         win.makeKeyAndOrderFront(nil)
         NSCursor.crosshair.set()
@@ -127,9 +142,9 @@ final class RegionPicker: NSWindowController {
         startPoint = event.locationInWindow
         let box = NSView(frame: NSRect(origin: startPoint, size: .zero))
         box.wantsLayer = true
-        box.layer?.borderColor = NSColor.systemBlue.cgColor
-        box.layer?.borderWidth = 2
-        box.layer?.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.2).cgColor
+        box.layer?.borderColor  = NSColor.systemBlue.cgColor
+        box.layer?.borderWidth  = 2
+        box.layer?.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.15).cgColor
         window?.contentView?.addSubview(box); selectionView = box
     }
 
@@ -141,13 +156,16 @@ final class RegionPicker: NSWindowController {
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard let box = selectionView, let screen = NSScreen.main else { close(); return }
-        let picked = CGRect(x: box.frame.origin.x,
-                            y: screen.frame.height - box.frame.origin.y - box.frame.height,
+        guard let box = selectionView, let win = window else { close(); return }
+        // Convert from window-local coords to global top-left coords across all displays.
+        let globalX = win.frame.origin.x + box.frame.origin.x
+        let globalBottomY = win.frame.origin.y + box.frame.origin.y
+        let picked = CGRect(x: globalX,
+                            y: desktopFrame.maxY - globalBottomY - box.frame.height,
                             width: box.frame.width, height: box.frame.height)
         NSCursor.arrow.set(); close()
         if picked.width > 4 && picked.height > 4 {
-            delegate?.regionPicker(self, didSelect: picked, forKey: key)
+            delegate?.dragPicker(self, didSelect: picked, tag: tag)
         }
     }
 
@@ -156,7 +174,7 @@ final class RegionPicker: NSWindowController {
     }
 }
 
-// MARK: - Setup Cell (used in the control window only)
+// MARK: - Setup Cell
 
 final class SetupCell: NSView {
     let key: String
@@ -207,29 +225,21 @@ final class SetupCell: NSView {
 
 // MARK: - Overlay Table Window
 
-// Displays a compact NBB-style table at the bottom of the screen.
-// No background — just text on a fully transparent window.
-
 final class OverlayTableWindow: NSWindowController {
 
-    // key → label
     private var labels: [String: NSTextField] = [:]
-    // We build the layout once on first update
-    private var didLayout = false
+    private var currentValues: [String: String] = [:]
+    private var valueKeys: [String] = []
+    private var valueFontSize: CGFloat = 14
+    private var valueFontWeight: NSFont.Weight = .regular
+    private let minValueFontSize: CGFloat = 6
 
-    // ordered keys so we can lay them out
-    private let topKeys: [[String]] = (0..<topRows).map { r in
-        topCols.map { cellKey(section: "top", row: r, col: $0.key) }
-    }
-    private let botKeys: [[String]] = (0..<botRows).map { r in
-        botCols.map { cellKey(section: "bot", row: r, col: $0.key) }
-    }
-
-    private let colW: CGFloat  = 90
-    private let rowH: CGFloat  = 28
-    private let hdrH: CGFloat  = 20
-    private let secGap: CGFloat = 14
-    private let fontSize: CGFloat = 14
+    // Default frame — overridden by saved config or position picker
+    private var targetFrame: NSRect = {
+        let s = NSScreen.main?.frame ?? .zero
+        let w: CGFloat = 480; let h: CGFloat = 160
+        return NSRect(x: s.midX - w/2, y: s.minY + 60, width: w, height: h)
+    }()
 
     init() {
         let win = NSWindow(contentRect: .zero, styleMask: .borderless,
@@ -241,125 +251,233 @@ final class OverlayTableWindow: NSWindowController {
         win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         win.hasShadow          = false
         super.init(window: win)
-        buildLayout()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private func buildLayout() {
-        guard let screen = NSScreen.main, let cv = window?.contentView else { return }
-
-        let topTableW = CGFloat(topCols.count) * colW
-        let botTableW = CGFloat(botCols.count) * colW
-        let winW      = max(topTableW, botTableW)
-
-        let topTableH = hdrH + CGFloat(topRows) * rowH
-        let botTableH = hdrH + CGFloat(botRows) * rowH
-        let winH      = topTableH + secGap + botTableH + 12
-
-        let winX = screen.frame.midX - winW / 2
-        let winY = screen.frame.minY + 60
-        window?.setFrame(NSRect(x: winX, y: winY, width: winW, height: winH), display: false)
-        window?.contentView?.setFrameSize(NSSize(width: winW, height: winH))
-
-        // ---- Top section ----
-        let topY = botTableH + secGap  // bottom of top section in window coords
-
-        // Headers
-        for (ci, col) in topCols.enumerated() {
-            let lbl = makeLabel(col.header, size: 10, weight: .semibold, color: NSColor(white: 0.6, alpha: 1))
-            lbl.frame = NSRect(x: CGFloat(ci) * colW, y: topY + CGFloat(topRows) * rowH, width: colW, height: hdrH)
-            cv.addSubview(lbl)
-        }
-        // Data rows
-        for (ri, rowKeys) in topKeys.enumerated() {
-            for (ci, key) in rowKeys.enumerated() {
-                let lbl = makeLabel("--", size: fontSize, weight: .regular, color: .white)
-                lbl.frame = NSRect(x: CGFloat(ci) * colW,
-                                   y: topY + CGFloat(topRows - 1 - ri) * rowH,
-                                   width: colW, height: rowH)
-                cv.addSubview(lbl)
-                labels[key] = lbl
-            }
-        }
-
-        // Divider line between sections
-        let div = NSBox()
-        div.boxType = .separator
-        div.frame = NSRect(x: 0, y: botTableH + secGap / 2 - 1, width: winW, height: 1)
-        cv.addSubview(div)
-
-        // ---- Bottom section ----
-        // Headers
-        for (ci, col) in botCols.enumerated() {
-            let lbl = makeLabel(col.header, size: 10, weight: .semibold, color: NSColor(white: 0.6, alpha: 1))
-            lbl.frame = NSRect(x: CGFloat(ci) * colW, y: CGFloat(botRows) * rowH, width: colW, height: hdrH)
-            cv.addSubview(lbl)
-        }
-        // Data rows
-        for (ri, rowKeys) in botKeys.enumerated() {
-            for (ci, key) in rowKeys.enumerated() {
-                let lbl = makeLabel("--", size: fontSize, weight: .regular, color: .white)
-                lbl.frame = NSRect(x: CGFloat(ci) * colW,
-                                   y: CGFloat(botRows - 1 - ri) * rowH,
-                                   width: colW, height: rowH)
-                cv.addSubview(lbl)
-                labels[key] = lbl
-            }
-        }
-
-        window?.makeKeyAndOrderFront(nil)
+    /// Call before start to position the overlay.
+    func setFrame(_ rect: CGRect) {
+        // rect is in top-left coords; convert to bottom-left for NSWindow
+        guard let screen = NSScreen.main else { return }
+        let winY = screen.frame.height - rect.origin.y - rect.height
+        targetFrame = NSRect(x: rect.origin.x, y: winY, width: rect.width, height: rect.height)
+        rebuildLayout()
     }
 
-    private func makeLabel(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
+    func rebuildLayout() {
+        guard let win = window else { return }
+        win.setFrame(targetFrame, display: false)
+        win.contentView?.subviews.forEach { $0.removeFromSuperview() }
+        labels.removeAll()
+        valueKeys.removeAll()
+
+        let W = targetFrame.width
+        let H = targetFrame.height
+        let cv = win.contentView!
+
+        // Proportions: top table ~55%, gap ~8%, bottom table ~37%
+        let topH   = H * 0.55
+        let botH   = H * 0.37
+        let gap    = H - topH - botH
+        let hdrH   = topH * 0.22
+        let tRowH  = (topH - hdrH) / CGFloat(topRows)
+        let bHdrH  = botH * 0.28
+        let bRowH  = (botH - bHdrH) / CGFloat(botRows)
+        let topColW = W / CGFloat(topCols.count)
+        let botColW = W / CGFloat(botCols.count)
+        let fontSize = max(10, min(tRowH * 0.55, 22))
+        valueFontSize = fontSize
+        let hdrSize  = max(8, fontSize * 0.65)
+
+        // -- Top section --
+        let topBaseY = botH + gap
+
+        for (ci, col) in topCols.enumerated() {
+            let lbl = makeLabel(col.header, size: hdrSize, weight: .semibold,
+                                color: NSColor(white: 0.7, alpha: 1))
+            lbl.frame = NSRect(x: CGFloat(ci) * topColW, y: topBaseY + CGFloat(topRows) * tRowH,
+                               width: topColW, height: hdrH)
+            cv.addSubview(lbl)
+        }
+        for ri in 0..<topRows {
+            for (ci, col) in topCols.enumerated() {
+                let key = cellKey(section: "top", row: ri, col: col.key)
+                let lbl = makeLabel("--", size: fontSize, weight: .regular, color: .white)
+                lbl.frame = NSRect(x: CGFloat(ci) * topColW,
+                                   y: topBaseY + CGFloat(topRows - 1 - ri) * tRowH,
+                                   width: topColW, height: tRowH)
+                cv.addSubview(lbl)
+                labels[key] = lbl
+                valueKeys.append(key)
+                lbl.stringValue = currentValues[key].flatMap { $0.isEmpty ? nil : $0 } ?? "--"
+            }
+        }
+
+        // Divider
+        let div = NSBox()
+        div.boxType = .separator
+        div.frame = NSRect(x: 0, y: botH + gap * 0.5, width: W, height: 1)
+        cv.addSubview(div)
+
+        // -- Bottom section --
+        for (ci, col) in botCols.enumerated() {
+            let lbl = makeLabel(col.header, size: hdrSize, weight: .semibold,
+                                color: NSColor(white: 0.7, alpha: 1))
+            lbl.frame = NSRect(x: CGFloat(ci) * botColW, y: CGFloat(botRows) * bRowH,
+                               width: botColW, height: bHdrH)
+            cv.addSubview(lbl)
+        }
+        for ri in 0..<botRows {
+            for (ci, col) in botCols.enumerated() {
+                let key = cellKey(section: "bot", row: ri, col: col.key)
+                let lbl = makeLabel("--", size: fontSize, weight: .regular, color: .white)
+                lbl.frame = NSRect(x: CGFloat(ci) * botColW,
+                                   y: CGFloat(botRows - 1 - ri) * bRowH,
+                                   width: botColW, height: bRowH)
+                cv.addSubview(lbl)
+                labels[key] = lbl
+                valueKeys.append(key)
+                lbl.stringValue = currentValues[key].flatMap { $0.isEmpty ? nil : $0 } ?? "--"
+            }
+        }
+
+        updateAllValueFonts()
+        recolorAllValues()
+        win.makeKeyAndOrderFront(nil)
+    }
+
+    private func makeLabel(_ text: String, size: CGFloat, weight: NSFont.Weight,
+                            color: NSColor) -> NSTextField {
         let lbl = NSTextField(labelWithString: text)
         lbl.font = NSFont.monospacedDigitSystemFont(ofSize: size, weight: weight)
-        lbl.textColor   = color
-        lbl.alignment   = .center
-        lbl.drawsBackground = false
-        lbl.isBezeled   = false
+        lbl.textColor = color; lbl.alignment = .center
+        lbl.drawsBackground = false; lbl.isBezeled = false
+        lbl.lineBreakMode = .byClipping
+        lbl.maximumNumberOfLines = 1
+        lbl.cell?.wraps = false
+        lbl.cell?.truncatesLastVisibleLine = false
         return lbl
     }
 
     func updateValue(key: String, value: String) {
         DispatchQueue.main.async {
             guard let lbl = self.labels[key] else { return }
+            self.currentValues[key] = value
             lbl.stringValue = value.isEmpty ? "--" : value
+            self.updateAllValueFonts()
+            self.recolorAllValues()
+        }
+    }
 
-            // Colour % column green/orange/red
+    private func updateAllValueFonts() {
+        guard !valueKeys.isEmpty else { return }
+        var fittedSize = valueFontSize
+
+        while fittedSize > minValueFontSize {
+            let font = NSFont.monospacedDigitSystemFont(ofSize: fittedSize, weight: valueFontWeight)
+            let allFit = valueKeys.allSatisfy { key in
+                guard let lbl = labels[key] else { return true }
+                let text = lbl.stringValue.isEmpty ? "--" : lbl.stringValue
+                let measured = (text as NSString).boundingRect(
+                    with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: [.font: font]
+                ).integral.size
+                // Use conservative bounds to avoid right-edge clipping.
+                return measured.width <= lbl.frame.width * 0.86 && measured.height <= lbl.frame.height * 0.86
+            }
+            if allFit { break }
+            fittedSize -= 0.5
+        }
+
+        valueFontSize = max(minValueFontSize, fittedSize)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: valueFontSize, weight: valueFontWeight)
+        for key in valueKeys {
+            labels[key]?.font = font
+        }
+    }
+
+    private func recolorAllValues() {
+        for key in valueKeys {
+            guard let lbl = labels[key] else { continue }
             if key.hasSuffix("_pct") {
-                let v = Double(value.replacingOccurrences(of: "%", with: "")) ?? 0
+                let raw = currentValues[key] ?? lbl.stringValue
+                let v = Double(raw.replacingOccurrences(of: "%", with: "")) ?? 0
                 lbl.textColor = v > 50 ? .systemGreen : v > 10 ? .systemOrange : .systemRed
             } else {
                 lbl.textColor = .white
             }
         }
     }
+
+    func hide() { window?.orderOut(nil) }
+    func show() { window?.makeKeyAndOrderFront(nil) }
+}
+
+// MARK: - Overlay Position Preview
+// Semi-transparent preview shown while dragging to place the overlay.
+
+final class OverlayPreviewWindow: NSWindowController {
+    init(frame: NSRect) {
+        let win = NSWindow(contentRect: frame, styleMask: .borderless,
+                           backing: .buffered, defer: false)
+        win.level           = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)) - 1)
+        win.isOpaque        = false
+        win.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.18)
+        win.ignoresMouseEvents = true
+        super.init(window: win)
+
+        // Border
+        let border = NSView(frame: NSRect(origin: .zero, size: frame.size))
+        border.wantsLayer = true
+        border.layer?.borderColor = NSColor.systemBlue.cgColor
+        border.layer?.borderWidth = 2
+        win.contentView?.addSubview(border)
+
+        // Label
+        let lbl = NSTextField(labelWithString: "Overlay will appear here")
+        lbl.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        lbl.textColor = .white; lbl.alignment = .center
+        lbl.translatesAutoresizingMaskIntoConstraints = false
+        lbl.backgroundColor = .clear
+        win.contentView?.addSubview(lbl)
+        NSLayoutConstraint.activate([
+            lbl.centerXAnchor.constraint(equalTo: win.contentView!.centerXAnchor),
+            lbl.centerYAnchor.constraint(equalTo: win.contentView!.centerYAnchor),
+        ])
+        win.makeKeyAndOrderFront(nil)
+    }
+    required init?(coder: NSCoder) { fatalError() }
 }
 
 // MARK: - Control Window
 
-final class ControlWindow: NSWindowController, RegionPickerDelegate {
+final class ControlWindow: NSWindowController, DragPickerDelegate {
     private var config    = AppConfig.load()
-    private var picker:   RegionPicker?
+    private var picker:   DragPicker?
+    private var preview:  OverlayPreviewWindow?
     private var allCells: [SetupCell] = []
     private var isRunning = false
 
-    private let startStopBtn = NSButton()
-    private let statusLbl    = NSTextField(labelWithString: "Configure regions then press Start")
+    private let startStopBtn    = NSButton()
+    private let statusLbl       = NSTextField(labelWithString: "Set regions then press Start")
+    private let overlayBtn      = NSButton()
+    private var overlayFrameLbl = NSTextField(labelWithString: "Not set")
 
     var onStart: (([String: CGRect]) -> Void)?
     var onStop:  (() -> Void)?
+    var onOverlayFrameChanged: ((CGRect) -> Void)?
 
     init() {
         let win = NSWindow(
-            contentRect: NSRect(x: 120, y: 120, width: 560, height: 420),
+            contentRect: NSRect(x: 120, y: 120, width: 580, height: 480),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered, defer: false)
         win.title = "NinjaOCR Setup"
         win.backgroundColor = NSColor(white: 0.1, alpha: 1)
         super.init(window: win)
         buildUI(in: win.contentView!)
+        applyConfig()
         win.makeKeyAndOrderFront(nil)
     }
 
@@ -368,7 +486,7 @@ final class ControlWindow: NSWindowController, RegionPickerDelegate {
     private func buildUI(in root: NSView) {
         let outer = NSStackView()
         outer.orientation = .vertical
-        outer.spacing = 16
+        outer.spacing = 14
         outer.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         outer.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(outer)
@@ -384,24 +502,42 @@ final class ControlWindow: NSWindowController, RegionPickerDelegate {
         outer.addArrangedSubview(sectionGrid(title: "Ender Eye Throws", section: "bot",
                                              cols: botCols, rows: botRows))
 
-        // Bottom controls
+        // Overlay placement row
+        overlayBtn.title = "⊞  Set Overlay Position"
+        overlayBtn.bezelStyle = .rounded
+        overlayBtn.target = self; overlayBtn.action = #selector(pickOverlay)
+
+        overlayFrameLbl.font = NSFont.systemFont(ofSize: 11)
+        overlayFrameLbl.textColor = NSColor(white: 0.5, alpha: 1)
+        overlayFrameLbl.isEditable = false; overlayFrameLbl.isBezeled = false
+        overlayFrameLbl.backgroundColor = .clear
+
+        if let saved = config.overlayFrame {
+            let r = saved.cgRect
+            overlayFrameLbl.stringValue = String(format: "%.0f, %.0f  •  %.0f × %.0f",
+                                                 r.origin.x, r.origin.y, r.width, r.height)
+        }
+
+        let overlayRow = NSStackView(views: [overlayBtn, overlayFrameLbl])
+        overlayRow.spacing = 10
+        outer.addArrangedSubview(overlayRow)
+
+        // Start/stop
         startStopBtn.bezelStyle = .rounded
         startStopBtn.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        startStopBtn.target = self
-        startStopBtn.action = #selector(toggleRunning)
+        startStopBtn.target = self; startStopBtn.action = #selector(toggleRunning)
         updateButtonState()
 
         statusLbl.font = NSFont.systemFont(ofSize: 11)
         statusLbl.textColor = NSColor(white: 0.5, alpha: 1)
-        statusLbl.alignment = .center
+        statusLbl.alignment = .center; statusLbl.isEditable = false
+        statusLbl.isBezeled = false; statusLbl.backgroundColor = .clear
 
         let btnRow = NSStackView(views: [startStopBtn])
         btnRow.distribution = .fillEqually
         outer.addArrangedSubview(btnRow)
         outer.addArrangedSubview(statusLbl)
         startStopBtn.widthAnchor.constraint(equalToConstant: 160).isActive = true
-
-        applyConfig()
     }
 
     private func sectionGrid(title: String, section: String,
@@ -414,12 +550,13 @@ final class ControlWindow: NSWindowController, RegionPickerDelegate {
         let titleLbl = NSTextField(labelWithString: title.uppercased())
         titleLbl.font = NSFont.systemFont(ofSize: 10, weight: .bold)
         titleLbl.textColor = NSColor(white: 0.5, alpha: 1)
+        titleLbl.isEditable = false; titleLbl.isBezeled = false
+        titleLbl.backgroundColor = .clear
         titleLbl.translatesAutoresizingMaskIntoConstraints = false
         wrapper.addSubview(titleLbl)
 
         let grid = NSGridView()
-        grid.rowSpacing    = 1
-        grid.columnSpacing = 1
+        grid.rowSpacing = 1; grid.columnSpacing = 1
         grid.translatesAutoresizingMaskIntoConstraints = false
         wrapper.addSubview(grid)
 
@@ -428,12 +565,11 @@ final class ControlWindow: NSWindowController, RegionPickerDelegate {
             for col in cols {
                 let key  = cellKey(section: section, row: row, col: col.key)
                 let cell = SetupCell(key: key, header: row == 0 ? col.header : "")
-                cell.onPick = { [weak self] k in self?.startPicking(key: k) }
+                cell.onPick = { [weak self] k in self?.startPickingCell(key: k) }
                 cell.translatesAutoresizingMaskIntoConstraints = false
-                cell.widthAnchor.constraint(equalToConstant: 95).isActive = true
-                cell.heightAnchor.constraint(equalToConstant: 52).isActive = true
-                allCells.append(cell)
-                views.append(cell)
+                cell.widthAnchor.constraint(equalToConstant: 88).isActive = true
+                cell.heightAnchor.constraint(equalToConstant: 50).isActive = true
+                allCells.append(cell); views.append(cell)
             }
             grid.addRow(with: views)
         }
@@ -453,14 +589,40 @@ final class ControlWindow: NSWindowController, RegionPickerDelegate {
         for cell in allCells { cell.markConfigured(config.regions[cell.key] != nil) }
     }
 
-    private func startPicking(key: String) {
-        picker = RegionPicker(key: key); picker?.delegate = self
+    private func startPickingCell(key: String) {
+        picker = DragPicker(tag: key, instruction: "Drag over the number for: \(key)")
+        picker?.delegate = self
     }
 
-    func regionPicker(_ picker: RegionPicker, didSelect rect: CGRect, forKey key: String) {
-        config.regions[key] = RegionConfig(rect); config.save()
-        DispatchQueue.main.async {
-            self.allCells.first { $0.key == key }?.markConfigured(true)
+    @objc private func pickOverlay() {
+        picker = DragPicker(tag: "__overlay__", instruction: "Drag to set where the overlay table will appear")
+        picker?.delegate = self
+    }
+
+    func dragPicker(_ picker: DragPicker, didSelect rect: CGRect, tag: String) {
+        if tag == "__overlay__" {
+            config.overlayFrame = RegionConfig(rect)
+            config.save()
+            DispatchQueue.main.async {
+                self.overlayFrameLbl.stringValue = String(format: "%.0f, %.0f  •  %.0f × %.0f",
+                                                         rect.origin.x, rect.origin.y,
+                                                         rect.width, rect.height)
+                self.onOverlayFrameChanged?(rect)
+                // Show a brief preview
+                if let screen = NSScreen.main {
+                    let winY = screen.frame.height - rect.origin.y - rect.height
+                    let winFrame = NSRect(x: rect.origin.x, y: winY, width: rect.width, height: rect.height)
+                    self.preview = OverlayPreviewWindow(frame: winFrame)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                        self.preview?.close(); self.preview = nil
+                    }
+                }
+            }
+        } else {
+            config.regions[tag] = RegionConfig(rect); config.save()
+            DispatchQueue.main.async {
+                self.allCells.first { $0.key == tag }?.markConfigured(true)
+            }
         }
     }
 
@@ -469,7 +631,8 @@ final class ControlWindow: NSWindowController, RegionPickerDelegate {
         if isRunning {
             let rects = config.regions.mapValues { $0.cgRect }
             onStart?(rects)
-            statusLbl.stringValue = "Running — \(rects.count)/\((topRows * topCols.count) + (botRows * botCols.count)) regions active"
+            let total = (topRows * topCols.count) + (botRows * botCols.count)
+            statusLbl.stringValue = "Running — \(rects.count)/\(total) regions active"
         } else {
             onStop?()
             statusLbl.stringValue = "Stopped"
@@ -480,6 +643,8 @@ final class ControlWindow: NSWindowController, RegionPickerDelegate {
         startStopBtn.title = isRunning ? "■  Stop" : "▶  Start"
         startStopBtn.contentTintColor = isRunning ? .systemRed : .systemGreen
     }
+
+    var savedOverlayFrame: CGRect? { config.overlayFrame?.cgRect }
 }
 
 // MARK: - Coordinator
@@ -491,11 +656,25 @@ final class AppCoordinator {
     private var regions: [String: CGRect] = [:]
 
     init() {
+        // Apply saved overlay position immediately
+        if let saved = controls.savedOverlayFrame {
+            overlay.setFrame(saved)
+        } else {
+            overlay.rebuildLayout()
+        }
+
+        controls.onOverlayFrameChanged = { [weak self] rect in
+            self?.overlay.setFrame(rect)
+        }
         controls.onStart = { [weak self] rects in
             self?.regions = rects
+            self?.overlay.show()
             self?.startPolling()
         }
-        controls.onStop = { [weak self] in self?.stopPolling() }
+        controls.onStop = { [weak self] in
+            self?.stopPolling()
+            self?.overlay.hide()
+        }
     }
 
     private func startPolling() {
@@ -510,8 +689,8 @@ final class AppCoordinator {
         Task {
             for (key, rect) in snapshot {
                 guard let image = await captureRegion(rect) else { continue }
-                let value = recognizeNumber(in: image)
-                self.overlay.updateValue(key: key, value: value)
+                let value = recognizeText(in: image)
+                await self.overlay.updateValue(key: key, value: value)
             }
         }
     }
