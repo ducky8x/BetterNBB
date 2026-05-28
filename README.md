@@ -38,6 +38,12 @@ BetterNBB is a macOS overlay for Ninjabrain Bot. It reads Ninjabrain Bot's local
 - macOS
 - Ninjabrain Bot with its API enabled
 
+## Download
+
+Download the zipped app from the GitHub Releases page, unzip it, and move `BetterNBB.app` to the Applications folder.
+
+The first time you open BetterNBB, macOS may show a security warning. Right-click `BetterNBB.app`, choose `Open`, then confirm that you want to open it.
+
 ## Enable The Ninjabrain Bot API
 
 BetterNBB only works if Ninjabrain Bot's local API is enabled.
@@ -65,11 +71,15 @@ It uses these API endpoints:
 
 If BetterNBB says it is not connected, the most common cause is that the Ninjabrain Bot API setting is off.
 
-Then, move the app to the Applications folder.
-
 ## Version 1.0.0
 
 BetterNBB v1.0.0 is the first full release of the API-based overlay.
+
+Release notes:
+
+- BetterNBB is now packaged as a real macOS app.
+- The downloaded app works without installing Xcode or Apple command line developer tools.
+- Users can open `BetterNBB.app` directly instead of running the Swift source code.
 
 New in v1.0.0:
 
