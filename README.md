@@ -42,7 +42,7 @@ BetterNBB is a macOS overlay for Ninjabrain Bot. It reads Ninjabrain Bot's local
 
 Download the zipped app from the GitHub Releases page, unzip it, and move `BetterNBB.app` to the Applications folder.
 
-The first time you open BetterNBB, macOS may show a security warning. Right-click `BetterNBB.app`, choose `Open`, then confirm that you want to open it.
+The first time you open BetterNBB, macOS may show a security warning. Confirm you want to open the app by going to "Privacy and Security" in System Settings, scrolling down to "Security," and clicking "Open Anyway."
 
 ## Enable The Ninjabrain Bot API
 
