@@ -40,9 +40,42 @@ BetterNBB is a macOS overlay for Ninjabrain Bot. It reads Ninjabrain Bot's local
 
 ## Download
 
-Download the zipped app from the GitHub Releases page, unzip it, and move `BetterNBB.app` to the Applications folder.
+BetterNBB has three download options:
+
+1. DMG (recommended)
+
+Download the `.dmg` from the GitHub Releases page, open it, and drag `BetterNBB.app` to the Applications folder.
 
 The first time you open BetterNBB, macOS may show a security warning. Confirm you want to open the app by going to "Privacy and Security" in System Settings, scrolling down to "Security," and clicking "Open Anyway."
+
+2. Direct `.app` file
+
+Download `BetterNBB.app` directly (if provided in the release), then manually drag it into the Applications folder.
+
+3. Manual `.swift` installer (requires Apple developer tools)
+
+This option requires Apple developer tools because the installer builds the app on your Mac. Before using the script installer, install either Xcode or Apple's Command Line Tools.
+
+Download the source installer `.zip`, unzip it, and double-click:
+
+```text
+compilinstaller_doubleclicktoinstall.command
+```
+
+The ZIP contains two files:
+
+```text
+BetterNBB.swift
+compilinstaller_doubleclicktoinstall.command
+```
+
+The installer compiles `BetterNBB.swift` into `BetterNBB.app`, moves the app to Applications, opens it, moves the installer command to Trash, and closes its Terminal window.
+
+If the compiler is missing, install Apple's Command Line Tools:
+
+```sh
+xcode-select --install
+```
 
 ## Enable The Ninjabrain Bot API
 
@@ -70,6 +103,16 @@ It uses these API endpoints:
 ```
 
 If BetterNBB says it is not connected, the most common cause is that the Ninjabrain Bot API setting is off.
+
+## Version 1.0.5
+
+This update adds automatic overlay resizing. BetterNBB now shrinks the overlay window to fit the information currently shown on screen. For example, if there is only one visible stronghold prediction row, the overlay shows only that row instead of leaving empty `--` rows.
+
+Release notes:
+
+- Automatically resizes the overlay window based on visible prediction rows, eye throw rows, messages, and movement hints.
+- Removes unused placeholder rows from the overlay when fewer predictions or eye throws are available.
+- Adds a DMG release option and a source installer ZIP option.
 
 ## Version 1.0.0
 
