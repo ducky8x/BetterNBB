@@ -608,11 +608,19 @@ final class OverlayWindow: NSWindowController {
     private var labels: [String: NSTextField] = [:]
     private var lastState = NBBState()
     private var lastMessages: [NBBState.InformationMessage] = []
+    private var layout = LayoutState()
 
     struct Col {
         let header: String
         let key: String
         let weight: CGFloat
+    }
+
+    private struct LayoutState: Equatable {
+        var predRows = 0
+        var eyeRows = 0
+        var showMessages = false
+        var showMoveHint = false
     }
 
     init(cfg: OverlayConfig) {
@@ -661,31 +669,39 @@ final class OverlayWindow: NSWindowController {
         labels.removeAll()
 
         let r = cfg.overlayRect
+        let currentPreds = filteredPredictions(from: lastState)
+        layout = desiredLayout(preds: currentPreds, state: lastState)
         let winFrame = NSRect(x: r.minX,
-                              y: screen.frame.height - r.minY - r.height,
-                              width: r.width, height: r.height)
+                              y: screen.frame.height - r.minY - layoutHeight(for: layout, fullHeight: r.height),
+                              width: r.width,
+                              height: layoutHeight(for: layout, fullHeight: r.height))
         win.setFrame(winFrame, display: false)
 
         let W  = winFrame.width
-        let H  = winFrame.height
+        let fullH = CGFloat(r.height)
         let cv = win.contentView!
 
         let pCols = predCols(); let eCols = eyeCols()
-        let pRows = cfg.maxPredRows; let eRows = cfg.maxEyeRows
+        let pRows = layout.predRows; let eRows = layout.eyeRows
 
-        let msgH   : CGFloat = cfg.showInfoMessages ? min(max(H * 0.20, 34), 58) : 0
-        let moveH  : CGFloat = cfg.showMoveHint ? min(max(H * 0.10, 18), 30) : 0
-        let tableH : CGFloat = H - msgH - moveH
+        let fullMsgH  : CGFloat = min(max(fullH * 0.20, 34), 58)
+        let fullMoveH : CGFloat = min(max(fullH * 0.10, 18), 30)
+        let fullTableH: CGFloat = fullH - (cfg.showInfoMessages ? fullMsgH : 0) - (cfg.showMoveHint ? fullMoveH : 0)
 
         // Vertical split: predictions above eye throws, with optional messages at bottom.
-        let predH  : CGFloat = tableH * 0.59
-        let eyeH   : CGFloat = tableH * 0.34
-        let gap    : CGFloat = tableH - predH - eyeH
+        let fullPredH: CGFloat = fullTableH * 0.59
+        let fullEyeH : CGFloat = fullTableH * 0.34
+        let fullGap  : CGFloat = fullTableH - fullPredH - fullEyeH
 
-        let pHdrH  : CGFloat = predH * 0.17
-        let pRowH  : CGFloat = (predH - pHdrH) / CGFloat(max(1, pRows))
-        let eHdrH  : CGFloat = eyeH  * 0.27
-        let eRowH  : CGFloat = (eyeH  - eHdrH) / CGFloat(max(1, eRows))
+        let pHdrH  : CGFloat = fullPredH * 0.17
+        let pRowH  : CGFloat = (fullPredH - pHdrH) / CGFloat(max(1, cfg.maxPredRows))
+        let eHdrH  : CGFloat = fullEyeH * 0.27
+        let eRowH  : CGFloat = (fullEyeH - eHdrH) / CGFloat(max(1, cfg.maxEyeRows))
+        let predH  : CGFloat = pRows > 0 && !pCols.isEmpty ? pHdrH + CGFloat(pRows) * pRowH : 0
+        let eyeH   : CGFloat = eRows > 0 && !eCols.isEmpty ? eHdrH + CGFloat(eRows) * eRowH : 0
+        let gap    : CGFloat = predH > 0 && eyeH > 0 ? max(4, fullGap) : 0
+        let msgH   : CGFloat = layout.showMessages ? fullMsgH : 0
+        let moveH  : CGFloat = layout.showMoveHint ? fullMoveH : 0
 
         let pWidths = colWidths(pCols, totalWidth: W)
         let eWidths = colWidths(eCols, totalWidth: W)
@@ -696,61 +712,66 @@ final class OverlayWindow: NSWindowController {
         let msgBaseY  : CGFloat = 0
         let moveBaseY : CGFloat = msgH
         let eyeBaseY  : CGFloat = msgH + moveH
-        let predBaseY : CGFloat = eyeH + gap
-        let predY     : CGFloat = msgH + predBaseY
+        let predY     : CGFloat = eyeBaseY + eyeH + gap
 
         // ── Prediction table ──
         var x: CGFloat = 0
-        for (ci, col) in pCols.enumerated() {
-            let w = pWidths[ci]
-            put(col.header, NSRect(x: x,
-                                   y: predY + CGFloat(pRows)*pRowH,
-                                   width: w, height: pHdrH),
-                size: hdrFS, weight: .semibold, color: NSColor(white: 0.65, alpha: 1), in: cv)
-            x += w
-        }
-        for ri in 0..<pRows {
-            let y = predY + CGFloat(pRows - 1 - ri) * pRowH
-            x = 0
+        if pRows > 0 {
             for (ci, col) in pCols.enumerated() {
                 let w = pWidths[ci]
-                let key = "p_\(ri)_\(col.key)"
-                labels[key] = put("--", NSRect(x: x, y: y,
-                                               width: w, height: pRowH),
-                                  size: fs, weight: .regular, color: .white, in: cv)
+                put(col.header, NSRect(x: x,
+                                       y: predY + CGFloat(pRows)*pRowH,
+                                       width: w, height: pHdrH),
+                    size: hdrFS, weight: .semibold, color: NSColor(white: 0.65, alpha: 1), in: cv)
                 x += w
+            }
+            for ri in 0..<pRows {
+                let y = predY + CGFloat(pRows - 1 - ri) * pRowH
+                x = 0
+                for (ci, col) in pCols.enumerated() {
+                    let w = pWidths[ci]
+                    let key = "p_\(ri)_\(col.key)"
+                    labels[key] = put("", NSRect(x: x, y: y,
+                                                 width: w, height: pRowH),
+                                      size: fs, weight: .regular, color: .white, in: cv)
+                    x += w
+                }
             }
         }
 
         // ── Divider ──
-        let div = NSBox(); div.boxType = .separator
-        div.frame = NSRect(x: 0, y: msgH + eyeH + gap*0.5 - 0.5, width: W, height: 1)
-        cv.addSubview(div)
+        if predH > 0 && eyeH > 0 {
+            let div = NSBox(); div.boxType = .separator
+            div.frame = NSRect(x: 0, y: eyeBaseY + eyeH + gap*0.5 - 0.5, width: W, height: 1)
+            cv.addSubview(div)
+        }
 
         // ── Eye throw table ──
         x = 0
-        for (ci, col) in eCols.enumerated() {
-            let w = eWidths[ci]
-            put(col.header, NSRect(x: x,
-                                   y: eyeBaseY + CGFloat(eRows)*eRowH,
-                                   width: w, height: eHdrH),
-                size: hdrFS, weight: .semibold, color: NSColor(white: 0.65, alpha: 1), in: cv)
-            x += w
-        }
-        for ri in 0..<eRows {
-            let y = eyeBaseY + CGFloat(eRows - 1 - ri) * eRowH
-            x = 0
+        if eRows > 0 {
             for (ci, col) in eCols.enumerated() {
                 let w = eWidths[ci]
-                let key = "e_\(ri)_\(col.key)"
-                labels[key] = put("--", NSRect(x: x, y: y,
-                                               width: w, height: eRowH),
-                                  size: fs*0.92, weight: .regular, color: .white, in: cv)
+                put(col.header, NSRect(x: x,
+                                       y: eyeBaseY + CGFloat(eRows)*eRowH,
+                                       width: w, height: eHdrH),
+                    size: hdrFS, weight: .semibold, color: NSColor(white: 0.65, alpha: 1), in: cv)
                 x += w
+            }
+            for ri in 0..<eRows {
+                let y = eyeBaseY + CGFloat(eRows - 1 - ri) * eRowH
+                x = 0
+                for (ci, col) in eCols.enumerated() {
+                    let w = eWidths[ci]
+                    let key = "e_\(ri)_\(col.key)"
+                    labels[key] = put("", NSRect(x: x, y: y,
+                                                 width: w, height: eRowH),
+                                      size: fs*0.92, weight: .regular, color: .white, in: cv)
+                    x += w
+                }
             }
         }
 
-        if cfg.showMoveHint {
+        if layout.showMoveHint {
             let hint = put("", NSRect(x: 12, y: moveBaseY, width: W - 24, height: moveH),
                            size: max(8, min(moveH * 0.48, 13)),
                            weight: .medium,
@@ -761,7 +782,7 @@ final class OverlayWindow: NSWindowController {
             labels["moveHint"] = hint
         }
 
-        if cfg.showInfoMessages {
+        if layout.showMessages {
             let msg = put("", NSRect(x: 12, y: msgBaseY + 2, width: W - 24, height: msgH - 4),
                           size: max(8, min(msgH * 0.25, 12)),
                           weight: .medium,
@@ -792,6 +813,51 @@ final class OverlayWindow: NSWindowController {
         return cols.map { totalWidth * ($0.weight / totalWeight) }
     }
 
+    private func filteredPredictions(from state: NBBState) -> [NBBState.Prediction] {
+        if cfg.hideZeroPct {
+            return state.predictions.filter { $0.certainty > 0.0005 }
+        }
+        return state.predictions
+    }
+
+    private func desiredLayout(preds: [NBBState.Prediction], state: NBBState) -> LayoutState {
+        let hasPredCols = !predCols().isEmpty
+        let hasEyeCols = !eyeCols().isEmpty
+        return LayoutState(
+            predRows: hasPredCols ? min(cfg.maxPredRows, preds.count) : 0,
+            eyeRows: hasEyeCols ? min(cfg.maxEyeRows, state.eyeThrows.count) : 0,
+            showMessages: cfg.showInfoMessages && lastMessages.contains { !$0.displayText.isEmpty },
+            showMoveHint: cfg.showMoveHint && !preds.isEmpty && state.playerPosition != nil
+        )
+    }
+
+    private func rebuildLayoutIfNeeded(preds: [NBBState.Prediction], state: NBBState) {
+        let next = desiredLayout(preds: preds, state: state)
+        guard next != layout else { return }
+        rebuildLayout()
+    }
+
+    private func layoutHeight(for layout: LayoutState, fullHeight: CGFloat) -> CGFloat {
+        let msgH: CGFloat = cfg.showInfoMessages ? min(max(fullHeight * 0.20, 34), 58) : 0
+        let moveH: CGFloat = cfg.showMoveHint ? min(max(fullHeight * 0.10, 18), 30) : 0
+        let tableH: CGFloat = fullHeight - msgH - moveH
+        let predH: CGFloat = tableH * 0.59
+        let eyeH: CGFloat = tableH * 0.34
+        let gap: CGFloat = tableH - predH - eyeH
+        let predHdrH: CGFloat = predH * 0.17
+        let predRowH: CGFloat = (predH - predHdrH) / CGFloat(max(1, cfg.maxPredRows))
+        let eyeHdrH: CGFloat = eyeH * 0.27
+        let eyeRowH: CGFloat = (eyeH - eyeHdrH) / CGFloat(max(1, cfg.maxEyeRows))
+
+        var height: CGFloat = 0
+        if layout.showMessages { height += msgH }
+        if layout.showMoveHint { height += moveH }
+        if layout.eyeRows > 0 { height += eyeHdrH + CGFloat(layout.eyeRows) * eyeRowH }
+        if layout.predRows > 0 && layout.eyeRows > 0 { height += max(4, gap) }
+        if layout.predRows > 0 { height += predHdrH + CGFloat(layout.predRows) * predRowH }
+        return max(1, min(fullHeight, height))
+    }
+
     // MARK: Render
 
     private func render(_ state: NBBState) {
@@ -802,17 +868,14 @@ final class OverlayWindow: NSWindowController {
         let pCols = predCols(); let eCols = eyeCols()
 
         // Filter & pad predictions
-        var preds = state.predictions
-        if cfg.hideZeroPct { preds = preds.filter { $0.certainty > 0.0005 } }
+        let preds = filteredPredictions(from: state)
+        rebuildLayoutIfNeeded(preds: preds, state: state)
         applyBestBodyFont(preds: preds, pCols: pCols, eCols: eCols)
 
-        for ri in 0..<cfg.maxPredRows {
-            let pred: NBBState.Prediction? = ri < preds.count ? preds[ri] : nil
+        for ri in 0..<layout.predRows {
+            let p = preds[ri]
             for col in pCols {
                 guard let lbl = labels["p_\(ri)_\(col.key)"] else { continue }
-                guard let p = pred else {
-                    lbl.stringValue = "--"; lbl.textColor = NSColor(white: 0.3, alpha: 1); continue
-                }
                 switch col.key {
                 case "loc":
                     lbl.stringValue = p.location; lbl.textColor = .white
@@ -833,13 +896,10 @@ final class OverlayWindow: NSWindowController {
             }
         }
 
-        for ri in 0..<cfg.maxEyeRows {
-            let eye: NBBState.EyeThrow? = ri < state.eyeThrows.count ? state.eyeThrows[ri] : nil
+        for ri in 0..<layout.eyeRows {
+            let e = state.eyeThrows[ri]
             for col in eCols {
                 guard let lbl = labels["e_\(ri)_\(col.key)"] else { continue }
-                guard let e = eye else {
-                    lbl.stringValue = "--"; lbl.textColor = NSColor(white: 0.3, alpha: 1); continue
-                }
                 switch col.key {
                 case "marker": lbl.stringValue = e.marker.dot
                 case "x":     lbl.stringValue = e.xStr
@@ -961,16 +1021,16 @@ final class OverlayWindow: NSWindowController {
     private func applyBestBodyFont(preds: [NBBState.Prediction], pCols: [Col], eCols: [Col]) {
         var candidates: [(String, CGFloat)] = []
 
-        for ri in 0..<cfg.maxPredRows {
-            let pred: NBBState.Prediction? = ri < preds.count ? preds[ri] : nil
+        for ri in 0..<layout.predRows {
+            let pred = preds[ri]
             for col in pCols {
                 guard let lbl = labels["p_\(ri)_\(col.key)"] else { continue }
                 candidates.append((predictionText(pred, col: col, state: lastState), max(1, lbl.frame.width - 10)))
             }
         }
 
-        for ri in 0..<cfg.maxEyeRows {
-            let eye: NBBState.EyeThrow? = ri < lastState.eyeThrows.count ? lastState.eyeThrows[ri] : nil
+        for ri in 0..<layout.eyeRows {
+            let eye = lastState.eyeThrows[ri]
             for col in eCols {
                 guard let lbl = labels["e_\(ri)_\(col.key)"] else { continue }
                 candidates.append((eyeText(eye, col: col), max(1, lbl.frame.width - 8)))
