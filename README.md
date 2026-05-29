@@ -104,9 +104,9 @@ It uses these API endpoints:
 
 If BetterNBB says it is not connected, the most common cause is that the Ninjabrain Bot API setting is off.
 
-## Version 1.0.5
+## Version 1.1.0
 
-This update adds automatic overlay resizing. BetterNBB now shrinks the overlay window to fit the information currently shown on screen. For example, if there is only one visible stronghold prediction row, the overlay shows only that row instead of leaving empty `--` rows.
+BetterNBB v1.1.0 adds automatic overlay resizing. BetterNBB now shrinks the overlay window to fit the information currently shown on screen. For example, if there is only one visible stronghold prediction row, the overlay shows only that row instead of leaving empty `--` rows.
 
 Release notes:
 
