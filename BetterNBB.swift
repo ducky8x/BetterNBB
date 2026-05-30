@@ -126,9 +126,31 @@ struct OverlayConfig: Codable {
     var showInfoMessages: Bool = true
     var showMoveHint: Bool = true
 
+    // Window appearance
+    var windowBgRed: Double = 0.06
+    var windowBgGreen: Double = 0.07
+    var windowBgBlue: Double = 0.10
+    var windowBgOpacity: Double = 0.72
+    var windowBorderRed: Double = 0.36
+    var windowBorderGreen: Double = 0.42
+    var windowBorderBlue: Double = 0.58
+    var windowShowBorder: Bool = true
+    var windowBorderOpacity: Double = 0.55
+    var windowBorderWidth: Double = 1.2
+    var windowCornerRadius: Double = 10
+    var windowShadowStrength: Double = 0.45
+
     // Computed
     var overlayRect: CGRect {
         CGRect(x: overlayX, y: overlayY, width: overlayWidth, height: overlayHeight)
+    }
+
+    var windowBackgroundColor: NSColor {
+        NSColor(calibratedRed: windowBgRed, green: windowBgGreen, blue: windowBgBlue, alpha: windowBgOpacity)
+    }
+
+    var windowBorderColor: NSColor {
+        NSColor(calibratedRed: windowBorderRed, green: windowBorderGreen, blue: windowBorderBlue, alpha: windowBorderOpacity)
     }
 
     // Persistence
@@ -176,16 +198,31 @@ private func firstDouble(_ dict: [String: Any], keys: [String]) -> Double? {
 private func eyeMarker(from dict: [String: Any]) -> NBBState.EyeThrow.Marker {
     let markerKeys = ["marker", "type", "measurementType", "throwType", "stdType",
                       "standardDeviationType", "boatColor", "boatColour", "boatState",
-                      "boatStatus", "boatMode", "colorOfBoat", "colourOfBoat"]
+                      "boatStatus", "boatMode", "defaultBoatMode",
+                      "colorOfBoat", "colourOfBoat"]
     let markerText = markerKeys
         .compactMap { dict[$0] as? String }
         .joined(separator: " ")
         .lowercased()
+    let combinedText = markerText + " " + dict.values
+        .compactMap { $0 as? String }
+        .joined(separator: " ")
+        .lowercased()
+
+    if combinedText.contains("gray boat") || combinedText.contains("grey boat") { return .grayBoat }
+    if combinedText.contains("blue boat") { return .blueBoat }
+    if combinedText.contains("green boat") { return .greenBoat }
+    if combinedText.contains("boat angle of 0") { return .greenBoat }
 
     if markerText.contains("gray") || markerText.contains("grey") { return .grayBoat }
     if markerText.contains("blue") { return .blueBoat }
     if markerText.contains("red") { return .redBoat }
     if markerText.contains("green") { return .greenBoat }
+
+    let zeroAngleKeys = ["boatAngle", "boat_angle", "angle", "eyeAngle", "measurementAngle"]
+    if let angle = firstDouble(dict, keys: zeroAngleKeys), abs(angle) < 0.0001 {
+        return .greenBoat
+    }
 
     if boolValue(dict["boat"]) ||
         boolValue(dict["isBoat"]) ||
@@ -546,6 +583,22 @@ protocol DragPickerDelegate: AnyObject {
     func dragPickerDidSelect(_ rect: CGRect)
 }
 
+struct OverlayPreviewState {
+    var predRows: Int
+    var eyeRows: Int
+    var showMessages: Bool
+    var showMoveHint: Bool
+
+    static func fromConfig(_ cfg: OverlayConfig) -> OverlayPreviewState {
+        OverlayPreviewState(
+            predRows: max(1, cfg.maxPredRows),
+            eyeRows: max(1, cfg.maxEyeRows),
+            showMessages: cfg.showInfoMessages,
+            showMoveHint: cfg.showMoveHint
+        )
+    }
+}
+
 final class DragPicker: NSWindowController {
     weak var delegate: DragPickerDelegate?
     private var start = NSPoint.zero
@@ -601,16 +654,124 @@ final class DragPicker: NSWindowController {
     }
 }
 
+final class TemplatePlacementWindow: NSWindowController, NSWindowDelegate {
+    weak var delegate: DragPickerDelegate?
+    var onClose: (() -> Void)?
+    private let minSize = NSSize(width: 320, height: 180)
+    private var previewImage: NSImage?
+    private var didNotifyClose = false
+    private var shouldApplyOnClose = true
+    private let imageView = NSImageView()
+
+    init(initialFrame: NSRect, previewImage: NSImage?) {
+        self.previewImage = previewImage
+        let win = NSWindow(contentRect: initialFrame,
+                           styleMask: [.titled, .closable, .resizable, .miniaturizable],
+                           backing: .buffered,
+                           defer: false)
+        win.title = "Overlay Placement"
+        win.minSize = minSize
+        if let screen = NSScreen.main {
+            let vf = screen.visibleFrame
+            win.maxSize = NSSize(width: max(minSize.width, vf.width * 0.98),
+                                 height: max(minSize.height, vf.height * 0.90))
+        }
+        if let previewImage, previewImage.size.width > 0, previewImage.size.height > 0 {
+            win.contentAspectRatio = previewImage.size
+        }
+        win.level = .floating
+        win.isOpaque = false
+        win.backgroundColor = NSColor(white: 0.08, alpha: 1)
+        win.titlebarAppearsTransparent = false
+        win.isMovableByWindowBackground = false
+        super.init(window: win)
+        win.delegate = self
+        buildTemplate(in: win.contentView!)
+        win.makeKeyAndOrderFront(nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func buildTemplate(in root: NSView) {
+        root.subviews.forEach { $0.removeFromSuperview() }
+        root.wantsLayer = true
+        root.layer?.backgroundColor = NSColor(white: 0.08, alpha: 1).cgColor
+
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.image = previewImage
+        // Keep normal proportional scaling (no stretch distortion).
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.imageAlignment = .alignCenter
+        root.addSubview(imageView)
+
+        NSLayoutConstraint.activate([
+            imageView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            imageView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            imageView.topAnchor.constraint(equalTo: root.topAnchor),
+            imageView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+    }
+
+    private func currentOverlayRect() -> CGRect? {
+        guard let win = window, let screen = NSScreen.main else { return nil }
+        let local = win.contentView?.bounds ?? imageView.frame
+        let screenRect = win.convertToScreen(local)
+        return CGRect(x: screenRect.minX,
+                      y: screen.frame.height - screenRect.maxY,
+                      width: screenRect.width,
+                      height: screenRect.height)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard !didNotifyClose else { return }
+        didNotifyClose = true
+        if shouldApplyOnClose, let rect = currentOverlayRect() {
+            delegate?.dragPickerDidSelect(rect)
+        }
+        onClose?()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {
+            shouldApplyOnClose = false
+            close()
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
 // MARK: - Overlay Window
 
 final class OverlayWindow: NSWindowController {
     private let minOverlayWidth: CGFloat = 220
     private let minOverlayHeight: CGFloat = 120
+    private let edgeHitInset: CGFloat = 18
+    private let cornerHitInset: CGFloat = 28
     private var cfg   : OverlayConfig
     private var labels: [String: NSTextField] = [:]
     private var lastState = NBBState()
     private var lastMessages: [NBBState.InformationMessage] = []
     private var layout = LayoutState()
+    private var placementMode = false
+    private var dragStartScreen = NSPoint.zero
+    private var dragStartFrame = NSRect.zero
+    private var activeDrag: DragMode = .none
+    var onPlacementRectChanged: ((CGRect) -> Void)?
+
+    private enum DragMode {
+        case none, move
+        case left, right, top, bottom
+        case topLeft, topRight, bottomLeft, bottomRight
+    }
+
+    private final class OverlayNSWindow: NSWindow {
+        weak var owner: OverlayWindow?
+        override func mouseDown(with event: NSEvent) { owner?.handleMouseDown(event) }
+        override func mouseDragged(with event: NSEvent) { owner?.handleMouseDragged(event) }
+        override func mouseUp(with event: NSEvent) { owner?.handleMouseUp(event) }
+        override func mouseMoved(with event: NSEvent) { owner?.handleMouseMoved(event) }
+    }
 
     struct Col {
         let header: String
@@ -627,15 +788,17 @@ final class OverlayWindow: NSWindowController {
 
     init(cfg: OverlayConfig) {
         self.cfg = cfg
-        let win = NSWindow(contentRect: .zero, styleMask: .borderless,
-                           backing: .buffered, defer: false)
+        let win = OverlayNSWindow(contentRect: .zero, styleMask: .borderless,
+                                  backing: .buffered, defer: false)
         win.level              = .floating
         win.isOpaque           = false
         win.backgroundColor    = .clear
         win.ignoresMouseEvents = true
         win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         win.hasShadow          = false
+        win.acceptsMouseMovedEvents = true
         super.init(window: win)
+        win.owner = self
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -662,6 +825,55 @@ final class OverlayWindow: NSWindowController {
 
     func show() { window?.makeKeyAndOrderFront(nil) }
     func hide() { window?.orderOut(nil) }
+    func setPlacementMode(_ enabled: Bool) {
+        placementMode = enabled
+        window?.ignoresMouseEvents = !enabled
+        if enabled {
+            window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            NSCursor.arrow.set()
+            persistCurrentRect(commit: true, notify: true)
+        }
+    }
+    func currentDisplayedOverlayRect() -> CGRect? {
+        guard let win = window, let screen = NSScreen.main else { return nil }
+        let f = win.frame
+        return CGRect(x: f.minX,
+                      y: screen.frame.height - f.maxY,
+                      width: f.width,
+                      height: f.height)
+    }
+    func placementPreviewImage() -> NSImage? {
+        guard let view = window?.contentView, view.bounds.width > 0, view.bounds.height > 0 else { return nil }
+        let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) ?? NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(view.bounds.width),
+            pixelsHigh: Int(view.bounds.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        guard let bitmap = rep else { return nil }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let image = NSImage(size: view.bounds.size)
+        image.addRepresentation(bitmap)
+        return image
+    }
+    func placementPreviewState() -> OverlayPreviewState {
+        let preds = filteredPredictions(from: lastState)
+        let current = desiredLayout(preds: preds, state: lastState)
+        return OverlayPreviewState(
+            predRows: max(1, current.predRows),
+            eyeRows: max(1, current.eyeRows),
+            showMessages: current.showMessages,
+            showMoveHint: current.showMoveHint
+        )
+    }
 
     // MARK: Layout rebuild
 
@@ -682,9 +894,47 @@ final class OverlayWindow: NSWindowController {
                               height: safeLayoutHeight)
         win.setFrame(winFrame, display: false)
 
-        let W  = winFrame.width
-        let fullH = safeFullHeight
+        let insetLeftRight: CGFloat = 10
+        let insetBottom: CGFloat = 8
+        let insetTop: CGFloat = 24
+        let xOff = insetLeftRight
+        let yOff = insetBottom
+        let W  = max(1, winFrame.width - insetLeftRight * 2)
+        let fullH = max(1, safeFullHeight - insetTop - insetBottom)
         let cv = win.contentView!
+
+        let panel = NSView(frame: NSRect(x: 0, y: 0, width: W, height: winFrame.height))
+        panel.wantsLayer = true
+        panel.autoresizingMask = [.width, .height]
+        if let layer = panel.layer {
+            layer.backgroundColor = cfg.windowBackgroundColor.cgColor
+            layer.cornerRadius = CGFloat(cfg.windowCornerRadius)
+            if cfg.windowShowBorder {
+                layer.borderColor = cfg.windowBorderColor.cgColor
+                layer.borderWidth = CGFloat(cfg.windowBorderWidth)
+            } else {
+                layer.borderColor = NSColor.clear.cgColor
+                layer.borderWidth = 0
+            }
+            layer.shadowColor = NSColor.black.cgColor
+            layer.shadowOpacity = Float(min(1, max(0, cfg.windowShadowStrength)))
+            layer.shadowRadius = CGFloat(2 + cfg.windowShadowStrength * 18)
+            layer.shadowOffset = .zero
+            layer.masksToBounds = false
+        }
+        panel.frame = NSRect(x: 0, y: 0, width: winFrame.width, height: winFrame.height)
+        cv.addSubview(panel)
+
+        if placementMode {
+            let hint = NSTextField(labelWithString: "Overlay will show here")
+            hint.font = NSFont.systemFont(ofSize: max(13, min(winFrame.height * 0.085, 26)), weight: .semibold)
+            hint.textColor = NSColor(white: 0.82, alpha: 0.95)
+            hint.alignment = .center
+            hint.frame = NSRect(x: 0, y: (winFrame.height - 34) * 0.5, width: winFrame.width, height: 34)
+            hint.autoresizingMask = [.width, .minYMargin, .maxYMargin]
+            cv.addSubview(hint)
+            return
+        }
 
         let pCols = predCols(); let eCols = eyeCols()
         let pRows = layout.predRows; let eRows = layout.eyeRows
@@ -724,8 +974,8 @@ final class OverlayWindow: NSWindowController {
         if pRows > 0 {
             for (ci, col) in pCols.enumerated() {
                 let w = pWidths[ci]
-                put(col.header, NSRect(x: x,
-                                       y: predY + CGFloat(pRows)*pRowH,
+                put(col.header, NSRect(x: xOff + x,
+                                       y: yOff + predY + CGFloat(pRows)*pRowH,
                                        width: w, height: pHdrH),
                     size: hdrFS, weight: .semibold, color: NSColor(white: 0.65, alpha: 1), in: cv)
                 x += w
@@ -736,18 +986,34 @@ final class OverlayWindow: NSWindowController {
                 for (ci, col) in pCols.enumerated() {
                     let w = pWidths[ci]
                     let key = "p_\(ri)_\(col.key)"
-                    labels[key] = put("", NSRect(x: x, y: y,
+                    labels[key] = put("", NSRect(x: xOff + x, y: yOff + y,
                                                  width: w, height: pRowH),
                                       size: fs, weight: .regular, color: .white, in: cv)
                     x += w
                 }
+            }
+
+            if cfg.showEyeMarker,
+               let angleIndex = pCols.firstIndex(where: { $0.key == "angle" }) {
+                let angleX = pWidths.prefix(angleIndex).reduce(CGFloat(0), +)
+                let angleW = pWidths[angleIndex]
+                let markerW = max(10, min(16, pHdrH * 0.72))
+                let markerX = angleX + angleW - markerW - 2
+                let headerY = predY + CGFloat(pRows) * pRowH
+                labels["boatTop"] = put("",
+                                        NSRect(x: xOff + markerX, y: yOff + headerY,
+                                               width: markerW, height: pHdrH),
+                                        size: hdrFS,
+                                        weight: .regular,
+                                        color: NSColor(white: 0.3, alpha: 1),
+                                        in: cv)
             }
         }
 
         // ── Divider ──
         if predH > 0 && eyeH > 0 {
             let div = NSBox(); div.boxType = .separator
-            div.frame = NSRect(x: 0, y: eyeBaseY + eyeH + gap*0.5 - 0.5, width: W, height: 1)
+            div.frame = NSRect(x: xOff, y: yOff + eyeBaseY + eyeH + gap*0.5 - 0.5, width: W, height: 1)
             cv.addSubview(div)
         }
 
@@ -756,8 +1022,8 @@ final class OverlayWindow: NSWindowController {
         if eRows > 0 {
             for (ci, col) in eCols.enumerated() {
                 let w = eWidths[ci]
-                put(col.header, NSRect(x: x,
-                                       y: eyeBaseY + CGFloat(eRows)*eRowH,
+                put(col.header, NSRect(x: xOff + x,
+                                       y: yOff + eyeBaseY + CGFloat(eRows)*eRowH,
                                        width: w, height: eHdrH),
                     size: hdrFS, weight: .semibold, color: NSColor(white: 0.65, alpha: 1), in: cv)
                 x += w
@@ -768,16 +1034,17 @@ final class OverlayWindow: NSWindowController {
                 for (ci, col) in eCols.enumerated() {
                     let w = eWidths[ci]
                     let key = "e_\(ri)_\(col.key)"
-                    labels[key] = put("", NSRect(x: x, y: y,
+                    labels[key] = put("", NSRect(x: xOff + x, y: yOff + y,
                                                  width: w, height: eRowH),
                                       size: fs*0.92, weight: .regular, color: .white, in: cv)
                     x += w
                 }
+
             }
         }
 
         if layout.showMoveHint {
-            let hint = put("", NSRect(x: 12, y: moveBaseY, width: W - 24, height: moveH),
+            let hint = put("", NSRect(x: xOff + 12, y: yOff + moveBaseY, width: W - 24, height: moveH),
                            size: max(8, min(moveH * 0.48, 13)),
                            weight: .medium,
                            color: NSColor(white: 0.75, alpha: 1),
@@ -788,7 +1055,7 @@ final class OverlayWindow: NSWindowController {
         }
 
         if layout.showMessages {
-            let msg = put("", NSRect(x: 12, y: msgBaseY + 2, width: W - 24, height: msgH - 4),
+            let msg = put("", NSRect(x: xOff + 12, y: yOff + msgBaseY + 2, width: W - 24, height: msgH - 4),
                           size: max(8, min(msgH * 0.25, 12)),
                           weight: .medium,
                           color: NSColor(white: 0.7, alpha: 1),
@@ -801,6 +1068,139 @@ final class OverlayWindow: NSWindowController {
         }
 
         win.makeKeyAndOrderFront(nil)
+    }
+
+    private func handleMouseDown(_ e: NSEvent) {
+        guard placementMode, let win = window else { return }
+        dragStartScreen = NSEvent.mouseLocation
+        dragStartFrame = win.frame
+        activeDrag = dragMode(at: e.locationInWindow, in: win)
+        if activeDrag == .none { activeDrag = .move }
+    }
+
+    private func handleMouseDragged(_ e: NSEvent) {
+        guard placementMode, let win = window else { return }
+        let current = NSEvent.mouseLocation
+        let dx = current.x - dragStartScreen.x
+        let dy = current.y - dragStartScreen.y
+        var f = dragStartFrame
+
+        switch activeDrag {
+        case .move:
+            f.origin.x = dragStartFrame.origin.x + dx
+            f.origin.y = dragStartFrame.origin.y + dy
+        case .left, .topLeft, .bottomLeft:
+            f.origin.x = dragStartFrame.origin.x + dx
+            f.size.width = dragStartFrame.width - dx
+        default: break
+        }
+        switch activeDrag {
+        case .right, .topRight, .bottomRight:
+            f.size.width = dragStartFrame.width + dx
+        default: break
+        }
+        switch activeDrag {
+        case .bottom, .bottomLeft, .bottomRight:
+            f.origin.y = dragStartFrame.origin.y + dy
+            f.size.height = dragStartFrame.height - dy
+        default: break
+        }
+        switch activeDrag {
+        case .top, .topLeft, .topRight:
+            f.size.height = dragStartFrame.height + dy
+        default: break
+        }
+
+        if f.size.width < minOverlayWidth {
+            if activeDrag == .left || activeDrag == .topLeft || activeDrag == .bottomLeft {
+                f.origin.x -= (minOverlayWidth - f.size.width)
+            }
+            f.size.width = minOverlayWidth
+        }
+        if f.size.height < minOverlayHeight {
+            if activeDrag == .bottom || activeDrag == .bottomLeft || activeDrag == .bottomRight {
+                f.origin.y -= (minOverlayHeight - f.size.height)
+            }
+            f.size.height = minOverlayHeight
+        }
+
+        win.setFrame(f, display: true)
+        persistCurrentRect(commit: false, notify: false)
+    }
+
+    private func handleMouseUp(_ e: NSEvent) {
+        guard placementMode else { return }
+        activeDrag = .none
+        persistCurrentRect(commit: true, notify: true)
+    }
+
+    private func handleMouseMoved(_ e: NSEvent) {
+        guard placementMode, let win = window else { return }
+        let mode = dragMode(at: e.locationInWindow, in: win)
+        switch mode {
+        case .left, .right: NSCursor.resizeLeftRight.set()
+        case .top, .bottom: NSCursor.resizeUpDown.set()
+        case .topLeft, .bottomRight: NSCursor.closedHand.set()
+        case .topRight, .bottomLeft: NSCursor.closedHand.set()
+        case .move: NSCursor.openHand.set()
+        case .none: NSCursor.arrow.set()
+        }
+    }
+
+    private func dragMode(at point: NSPoint, in win: NSWindow) -> DragMode {
+        let w = win.frame.width
+        let h = win.frame.height
+        let left = point.x <= edgeHitInset
+        let right = point.x >= w - edgeHitInset
+        let bottom = point.y <= edgeHitInset
+        let top = point.y >= h - edgeHitInset
+        let cornerLeft = point.x <= cornerHitInset
+        let cornerRight = point.x >= w - cornerHitInset
+        let cornerBottom = point.y <= cornerHitInset
+        let cornerTop = point.y >= h - cornerHitInset
+        if cornerLeft && cornerTop { return .topLeft }
+        if cornerRight && cornerTop { return .topRight }
+        if cornerLeft && cornerBottom { return .bottomLeft }
+        if cornerRight && cornerBottom { return .bottomRight }
+        if left { return .left }
+        if right { return .right }
+        if top { return .top }
+        if bottom { return .bottom }
+        return .move
+    }
+
+    private func persistCurrentRect(commit: Bool, notify: Bool) {
+        guard let rect = currentDisplayedOverlayRect() else { return }
+        cfg.overlayX = rect.minX
+        cfg.overlayY = rect.minY
+        cfg.overlayWidth = rect.width
+        cfg.overlayHeight = fullHeight(forDisplayedHeight: rect.height, layout: layout)
+        cfg.overlaySet = true
+        if commit { cfg.save() }
+        if notify {
+            let savedRect = CGRect(x: cfg.overlayX, y: cfg.overlayY,
+                                   width: cfg.overlayWidth, height: cfg.overlayHeight)
+            onPlacementRectChanged?(savedRect)
+        }
+    }
+
+    private func fullHeight(forDisplayedHeight targetHeight: CGFloat, layout: LayoutState) -> CGFloat {
+        let minH = minOverlayHeight
+        let maxH = max(minOverlayHeight, 3000)
+        if layoutHeight(for: layout, fullHeight: minH) >= targetHeight { return minH }
+
+        var low = minH
+        var high = maxH
+        for _ in 0..<22 {
+            let mid = (low + high) * 0.5
+            let shown = layoutHeight(for: layout, fullHeight: mid)
+            if shown < targetHeight {
+                low = mid
+            } else {
+                high = mid
+            }
+        }
+        return max(minH, high)
     }
 
     @discardableResult
@@ -907,7 +1307,6 @@ final class OverlayWindow: NSWindowController {
             for col in eCols {
                 guard let lbl = labels["e_\(ri)_\(col.key)"] else { continue }
                 switch col.key {
-                case "marker": lbl.stringValue = e.marker.dot
                 case "x":     lbl.stringValue = e.xStr
                 case "z":     lbl.stringValue = e.zStr
                 case "angle": lbl.stringValue = e.angleStr
@@ -915,11 +1314,16 @@ final class OverlayWindow: NSWindowController {
                 case "error": lbl.stringValue = e.errorStr
                 default: break
                 }
-                if col.key == "marker" {
-                    lbl.textColor = e.marker.color
-                } else {
-                    lbl.textColor = col.key == "offset" && e.correctionIncrements != nil ? .systemRed : .white
-                }
+                lbl.textColor = col.key == "offset" && e.correctionIncrements != nil ? .systemRed : .white
+            }
+        }
+        if let marker = labels["boatTop"] {
+            if let latest = state.eyeThrows.first {
+                marker.stringValue = latest.marker.dot
+                marker.textColor = latest.marker.color
+            } else {
+                marker.stringValue = ""
+                marker.textColor = NSColor(white: 0.3, alpha: 1)
             }
         }
 
@@ -1171,7 +1575,6 @@ final class OverlayWindow: NSWindowController {
 
     private func eyeCols() -> [Col] {
         var c = [Col]()
-        if cfg.showEyeMarker { c.append(Col(header: "",       key: "marker", weight: 0.30)) }
         if cfg.showEyeX      { c.append(Col(header: "x",      key: "x",      weight: 1.15)) }
         if cfg.showEyeZ      { c.append(Col(header: "z",      key: "z",      weight: 1.15)) }
         if cfg.showEyeAngle  { c.append(Col(header: "Angle",  key: "angle",  weight: 0.95)) }
@@ -1183,15 +1586,144 @@ final class OverlayWindow: NSWindowController {
 
 // MARK: - Settings Window
 
+final class WindowStyleWindow: NSWindowController {
+    private var cfg: OverlayConfig
+    var onChange: ((OverlayConfig) -> Void)?
+
+    private let bgColorWell = NSColorWell()
+    private let borderColorWell = NSColorWell()
+    private let borderToggle = NSButton(checkboxWithTitle: "Enable border", target: nil, action: nil)
+    private let bgOpacity = NSSlider(value: 0.72, minValue: 0.0, maxValue: 1.0, target: nil, action: nil)
+    private let borderOpacity = NSSlider(value: 0.55, minValue: 0.0, maxValue: 1.0, target: nil, action: nil)
+    private let borderWidth = NSSlider(value: 1.2, minValue: 0.0, maxValue: 6.0, target: nil, action: nil)
+    private let cornerRadius = NSSlider(value: 10, minValue: 0.0, maxValue: 24.0, target: nil, action: nil)
+    private let shadowStrength = NSSlider(value: 0.45, minValue: 0.0, maxValue: 1.0, target: nil, action: nil)
+
+    init(cfg: OverlayConfig) {
+        self.cfg = cfg
+        let win = NSWindow(contentRect: NSRect(x: 180, y: 220, width: 360, height: 340),
+                           styleMask: [.titled, .closable, .miniaturizable],
+                           backing: .buffered,
+                           defer: false)
+        win.title = "Customize Window"
+        win.backgroundColor = NSColor(white: 0.12, alpha: 1)
+        super.init(window: win)
+        buildUI(in: win.contentView!)
+        syncControls()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func setConfig(_ cfg: OverlayConfig) {
+        self.cfg = cfg
+        syncControls()
+    }
+
+    private func buildUI(in root: NSView) {
+        let outer = vstack(10, insets: .init(top: 16, left: 16, bottom: 16, right: 16))
+        root.addSubview(outer); pin(outer, to: root)
+
+        outer.addArrangedSubview(fieldRow("Background color", view: bgColorWell))
+        outer.addArrangedSubview(fieldRow("Background opacity", view: bgOpacity))
+        outer.addArrangedSubview(borderToggle)
+        outer.addArrangedSubview(fieldRow("Border color", view: borderColorWell))
+        outer.addArrangedSubview(fieldRow("Border opacity", view: borderOpacity))
+        outer.addArrangedSubview(fieldRow("Border strength", view: borderWidth))
+        outer.addArrangedSubview(fieldRow("Corner radius", view: cornerRadius))
+        outer.addArrangedSubview(fieldRow("Shadow strength", view: shadowStrength))
+
+        for slider in [bgOpacity, borderOpacity, borderWidth, cornerRadius, shadowStrength] {
+            slider.target = self
+            slider.action = #selector(anyChanged)
+        }
+        bgColorWell.target = self; bgColorWell.action = #selector(anyChanged)
+        borderColorWell.target = self; borderColorWell.action = #selector(anyChanged)
+        borderToggle.target = self; borderToggle.action = #selector(anyChanged)
+        borderToggle.font = .systemFont(ofSize: 12, weight: .medium)
+        borderToggle.contentTintColor = .white
+    }
+
+    private func fieldRow(_ title: String, view: NSView) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.spacing = 10
+        row.alignment = .centerY
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let lbl = NSTextField(labelWithString: title)
+        lbl.font = .systemFont(ofSize: 12, weight: .medium)
+        lbl.textColor = .white
+        lbl.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        lbl.widthAnchor.constraint(equalToConstant: 140).isActive = true
+
+        if let slider = view as? NSSlider {
+            slider.controlSize = .small
+            slider.translatesAutoresizingMaskIntoConstraints = false
+            slider.widthAnchor.constraint(equalToConstant: 170).isActive = true
+        } else {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.widthAnchor.constraint(equalToConstant: 54).isActive = true
+            view.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        }
+
+        row.addArrangedSubview(lbl)
+        row.addArrangedSubview(view)
+        return row
+    }
+
+    private func syncControls() {
+        bgColorWell.color = NSColor(calibratedRed: cfg.windowBgRed, green: cfg.windowBgGreen, blue: cfg.windowBgBlue, alpha: 1)
+        borderColorWell.color = NSColor(calibratedRed: cfg.windowBorderRed, green: cfg.windowBorderGreen, blue: cfg.windowBorderBlue, alpha: 1)
+        bgOpacity.doubleValue = cfg.windowBgOpacity
+        borderToggle.state = cfg.windowShowBorder ? .on : .off
+        borderOpacity.doubleValue = cfg.windowBorderOpacity
+        borderWidth.doubleValue = cfg.windowBorderWidth
+        cornerRadius.doubleValue = cfg.windowCornerRadius
+        shadowStrength.doubleValue = cfg.windowShadowStrength
+        let enabled = cfg.windowShowBorder
+        borderColorWell.isEnabled = enabled
+        borderOpacity.isEnabled = enabled
+        borderWidth.isEnabled = enabled
+    }
+
+    @objc private func anyChanged() {
+        let bg = bgColorWell.color.usingColorSpace(.deviceRGB) ?? bgColorWell.color
+        let border = borderColorWell.color.usingColorSpace(.deviceRGB) ?? borderColorWell.color
+        cfg.windowBgRed = Double(bg.redComponent)
+        cfg.windowBgGreen = Double(bg.greenComponent)
+        cfg.windowBgBlue = Double(bg.blueComponent)
+        cfg.windowBorderRed = Double(border.redComponent)
+        cfg.windowBorderGreen = Double(border.greenComponent)
+        cfg.windowBorderBlue = Double(border.blueComponent)
+        cfg.windowShowBorder = borderToggle.state == .on
+        cfg.windowBgOpacity = bgOpacity.doubleValue
+        cfg.windowBorderOpacity = borderOpacity.doubleValue
+        cfg.windowBorderWidth = borderWidth.doubleValue
+        cfg.windowCornerRadius = cornerRadius.doubleValue
+        cfg.windowShadowStrength = shadowStrength.doubleValue
+        let enabled = cfg.windowShowBorder
+        borderColorWell.isEnabled = enabled
+        borderOpacity.isEnabled = enabled
+        borderWidth.isEnabled = enabled
+        cfg.save()
+        onChange?(cfg)
+    }
+}
+
 final class SettingsWindow: NSWindowController, DragPickerDelegate {
     private let minOverlayWidth: CGFloat = 220
     private let minOverlayHeight: CGFloat = 120
+    private let maxOverlayWidth: CGFloat = 2600
+    private let maxOverlayHeight: CGFloat = 1400
     private var cfg     = OverlayConfig.load()
-    private var picker: DragPicker?
+    private var placementModeEnabled = false
+    private var styleWindow: WindowStyleWindow?
     private var previewWin: NSWindow?
     var onChange: ((OverlayConfig) -> Void)?
+    var onPlacementModeChanged: ((Bool) -> Void)?
 
     private let posBtn      = NSButton()
+    private let customizeBtn = NSButton()
     private let posLbl      = NSTextField(labelWithString: "Not set (default position)")
     private let predStepper = NSStepper()
     private let predLbl     = NSTextField(labelWithString: "")
@@ -1224,6 +1756,13 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
         super.init(window: win)
         buildUI(in: win.contentView!)
         syncControls()
+        let style = WindowStyleWindow(cfg: cfg)
+        style.onChange = { [weak self] updated in
+            self?.cfg = updated
+            self?.cfg.save()
+            self?.onChange?(updated)
+        }
+        styleWindow = style
         win.makeKeyAndOrderFront(nil)
     }
 
@@ -1247,11 +1786,16 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
 
         // Overlay position
         outer.addArrangedSubview(sectionLbl("OVERLAY POSITION"))
-        posBtn.title = "⊞  Drag to Place Overlay"
+        posBtn.title = "⊞  Place Overlay Template"
         posBtn.bezelStyle = .rounded; posBtn.target = self; posBtn.action = #selector(pickPos)
+        customizeBtn.title = "Customize Window"
+        customizeBtn.bezelStyle = .rounded
+        customizeBtn.target = self
+        customizeBtn.action = #selector(openWindowCustomizer)
         posLbl.isEditable = false; posLbl.isBezeled = false; posLbl.backgroundColor = .clear
         posLbl.textColor = NSColor(white: 0.5, alpha: 1); posLbl.font = .systemFont(ofSize: 10)
         outer.addArrangedSubview(posBtn)
+        outer.addArrangedSubview(customizeBtn)
         outer.addArrangedSubview(posLbl)
 
         // Row counts
@@ -1276,12 +1820,14 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
 
         // Eye columns
         outer.addArrangedSubview(sectionLbl("EYE THROW COLUMNS"))
-        for b in [chkEyeMarker, chkEyeX, chkEyeZ, chkEyeAngle, chkEyeOffset, chkEyeError] {
+        for b in [chkEyeX, chkEyeZ, chkEyeAngle, chkEyeOffset, chkEyeError] {
             b.target = self; b.action = #selector(anyChanged); outer.addArrangedSubview(b)
         }
 
         // Options
         outer.addArrangedSubview(sectionLbl("OPTIONS"))
+        chkEyeMarker.target = self; chkEyeMarker.action = #selector(anyChanged)
+        outer.addArrangedSubview(chkEyeMarker)
         chkHideZero.target = self; chkHideZero.action = #selector(anyChanged)
         outer.addArrangedSubview(chkHideZero)
         chkInfoMsgs.target = self; chkInfoMsgs.action = #selector(anyChanged)
@@ -1314,6 +1860,11 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
             ? String(format: "%.0f, %.0f  —  %.0f × %.0f",
                      cfg.overlayX, cfg.overlayY, cfg.overlayWidth, cfg.overlayHeight)
             : "Not set (default position)"
+        if placementModeEnabled {
+            posBtn.title = "Finish Overlay Placement"
+        } else {
+            posBtn.title = "⊞  Place Overlay Template"
+        }
     }
 
     @objc private func anyChanged() {
@@ -1336,54 +1887,32 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
         cfg.hideZeroPct   = chkHideZero.state == .on
         cfg.showInfoMessages = chkInfoMsgs.state == .on
         cfg.showMoveHint = chkMoveHint.state == .on
+        styleWindow?.setConfig(cfg)
         cfg.save(); onChange?(cfg)
     }
 
     @objc private func pickPos() {
-        picker = DragPicker(instruction: "Drag to set overlay position and size")
-        picker?.delegate = self
+        placementModeEnabled.toggle()
+        onPlacementModeChanged?(placementModeEnabled)
+        syncControls()
+    }
+
+    @objc private func openWindowCustomizer() {
+        styleWindow?.setConfig(cfg)
+        styleWindow?.showWindow(nil)
+        styleWindow?.window?.makeKeyAndOrderFront(nil)
     }
 
     func dragPickerDidSelect(_ rect: CGRect) {
         let clamped = CGRect(x: rect.minX,
                              y: rect.minY,
-                             width: max(minOverlayWidth, rect.width),
-                             height: max(minOverlayHeight, rect.height))
+                             width: min(maxOverlayWidth, max(minOverlayWidth, rect.width)),
+                             height: min(maxOverlayHeight, max(minOverlayHeight, rect.height)))
         cfg.overlayX = clamped.minX; cfg.overlayY = clamped.minY
         cfg.overlayWidth = clamped.width; cfg.overlayHeight = clamped.height
         cfg.overlaySet = true; cfg.save()
+        styleWindow?.setConfig(cfg)
         syncControls(); onChange?(cfg)
-        flashPreview(clamped)
-    }
-
-    private func flashPreview(_ rect: CGRect) {
-        guard let screen = NSScreen.main else { return }
-        previewWin?.close()
-        let wf = NSRect(x: rect.minX,
-                        y: screen.frame.height - rect.minY - rect.height,
-                        width: rect.width, height: rect.height)
-        let pw = NSWindow(contentRect: wf, styleMask: .borderless, backing: .buffered, defer: false)
-        pw.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)) - 1)
-        pw.isOpaque = false
-        pw.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.18)
-        pw.ignoresMouseEvents = true
-        let border = NSView(frame: NSRect(origin: .zero, size: wf.size))
-        border.wantsLayer = true
-        border.layer?.borderColor = NSColor.systemBlue.cgColor
-        border.layer?.borderWidth = 2
-        pw.contentView?.addSubview(border)
-        let lbl = NSTextField(labelWithString: "Overlay here")
-        lbl.font = .systemFont(ofSize: 13, weight: .medium); lbl.textColor = .white
-        lbl.alignment = .center; lbl.translatesAutoresizingMaskIntoConstraints = false
-        lbl.backgroundColor = .clear
-        pw.contentView?.addSubview(lbl)
-        NSLayoutConstraint.activate([
-            lbl.centerXAnchor.constraint(equalTo: pw.contentView!.centerXAnchor),
-            lbl.centerYAnchor.constraint(equalTo: pw.contentView!.centerYAnchor),
-        ])
-        pw.makeKeyAndOrderFront(nil)
-        previewWin = pw
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { pw.close() }
     }
 }
 
@@ -1433,6 +1962,14 @@ final class AppCoordinator: SSEClientDelegate, InformationMessageClientDelegate 
 
         settings.onChange = { [weak self] newCfg in
             self?.overlay.reconfigure(newCfg)
+        }
+        overlay.onPlacementRectChanged = { [weak self] rect in
+            self?.settings.dragPickerDidSelect(rect)
+        }
+        settings.onPlacementModeChanged = { [weak self] placing in
+            guard let self else { return }
+            self.overlay.setPlacementMode(placing)
+            self.overlay.rebuildLayout()
         }
 
         sse.delegate = self
