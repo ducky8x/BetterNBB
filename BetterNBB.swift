@@ -604,6 +604,8 @@ final class DragPicker: NSWindowController {
 // MARK: - Overlay Window
 
 final class OverlayWindow: NSWindowController {
+    private let minOverlayWidth: CGFloat = 220
+    private let minOverlayHeight: CGFloat = 120
     private var cfg   : OverlayConfig
     private var labels: [String: NSTextField] = [:]
     private var lastState = NBBState()
@@ -669,16 +671,19 @@ final class OverlayWindow: NSWindowController {
         labels.removeAll()
 
         let r = cfg.overlayRect
+        let safeWidth = max(minOverlayWidth, CGFloat(r.width))
+        let safeFullHeight = max(minOverlayHeight, CGFloat(r.height))
         let currentPreds = filteredPredictions(from: lastState)
         layout = desiredLayout(preds: currentPreds, state: lastState)
+        let safeLayoutHeight = layoutHeight(for: layout, fullHeight: safeFullHeight)
         let winFrame = NSRect(x: r.minX,
-                              y: screen.frame.height - r.minY - layoutHeight(for: layout, fullHeight: r.height),
-                              width: r.width,
-                              height: layoutHeight(for: layout, fullHeight: r.height))
+                              y: screen.frame.height - r.minY - safeLayoutHeight,
+                              width: safeWidth,
+                              height: safeLayoutHeight)
         win.setFrame(winFrame, display: false)
 
         let W  = winFrame.width
-        let fullH = CGFloat(r.height)
+        let fullH = safeFullHeight
         let cv = win.contentView!
 
         let pCols = predCols(); let eCols = eyeCols()
@@ -686,17 +691,17 @@ final class OverlayWindow: NSWindowController {
 
         let fullMsgH  : CGFloat = min(max(fullH * 0.20, 34), 58)
         let fullMoveH : CGFloat = min(max(fullH * 0.10, 18), 30)
-        let fullTableH: CGFloat = fullH - (cfg.showInfoMessages ? fullMsgH : 0) - (cfg.showMoveHint ? fullMoveH : 0)
+        let fullTableH: CGFloat = max(0, fullH - (cfg.showInfoMessages ? fullMsgH : 0) - (cfg.showMoveHint ? fullMoveH : 0))
 
         // Vertical split: predictions above eye throws, with optional messages at bottom.
         let fullPredH: CGFloat = fullTableH * 0.59
         let fullEyeH : CGFloat = fullTableH * 0.34
-        let fullGap  : CGFloat = fullTableH - fullPredH - fullEyeH
+        let fullGap  : CGFloat = max(0, fullTableH - fullPredH - fullEyeH)
 
-        let pHdrH  : CGFloat = fullPredH * 0.17
-        let pRowH  : CGFloat = (fullPredH - pHdrH) / CGFloat(max(1, cfg.maxPredRows))
-        let eHdrH  : CGFloat = fullEyeH * 0.27
-        let eRowH  : CGFloat = (fullEyeH - eHdrH) / CGFloat(max(1, cfg.maxEyeRows))
+        let pHdrH  : CGFloat = max(0, fullPredH * 0.17)
+        let pRowH  : CGFloat = max(0, (fullPredH - pHdrH) / CGFloat(max(1, cfg.maxPredRows)))
+        let eHdrH  : CGFloat = max(0, fullEyeH * 0.27)
+        let eRowH  : CGFloat = max(0, (fullEyeH - eHdrH) / CGFloat(max(1, cfg.maxEyeRows)))
         let predH  : CGFloat = pRows > 0 && !pCols.isEmpty ? pHdrH + CGFloat(pRows) * pRowH : 0
         let eyeH   : CGFloat = eRows > 0 && !eCols.isEmpty ? eHdrH + CGFloat(eRows) * eRowH : 0
         let gap    : CGFloat = predH > 0 && eyeH > 0 ? max(4, fullGap) : 0
@@ -838,16 +843,17 @@ final class OverlayWindow: NSWindowController {
     }
 
     private func layoutHeight(for layout: LayoutState, fullHeight: CGFloat) -> CGFloat {
-        let msgH: CGFloat = cfg.showInfoMessages ? min(max(fullHeight * 0.20, 34), 58) : 0
-        let moveH: CGFloat = cfg.showMoveHint ? min(max(fullHeight * 0.10, 18), 30) : 0
-        let tableH: CGFloat = fullHeight - msgH - moveH
+        let safeFullHeight = max(minOverlayHeight, fullHeight)
+        let msgH: CGFloat = cfg.showInfoMessages ? min(max(safeFullHeight * 0.20, 34), 58) : 0
+        let moveH: CGFloat = cfg.showMoveHint ? min(max(safeFullHeight * 0.10, 18), 30) : 0
+        let tableH: CGFloat = max(0, safeFullHeight - msgH - moveH)
         let predH: CGFloat = tableH * 0.59
         let eyeH: CGFloat = tableH * 0.34
-        let gap: CGFloat = tableH - predH - eyeH
-        let predHdrH: CGFloat = predH * 0.17
-        let predRowH: CGFloat = (predH - predHdrH) / CGFloat(max(1, cfg.maxPredRows))
-        let eyeHdrH: CGFloat = eyeH * 0.27
-        let eyeRowH: CGFloat = (eyeH - eyeHdrH) / CGFloat(max(1, cfg.maxEyeRows))
+        let gap: CGFloat = max(0, tableH - predH - eyeH)
+        let predHdrH: CGFloat = max(0, predH * 0.17)
+        let predRowH: CGFloat = max(0, (predH - predHdrH) / CGFloat(max(1, cfg.maxPredRows)))
+        let eyeHdrH: CGFloat = max(0, eyeH * 0.27)
+        let eyeRowH: CGFloat = max(0, (eyeH - eyeHdrH) / CGFloat(max(1, cfg.maxEyeRows)))
 
         var height: CGFloat = 0
         if layout.showMessages { height += msgH }
@@ -855,7 +861,7 @@ final class OverlayWindow: NSWindowController {
         if layout.eyeRows > 0 { height += eyeHdrH + CGFloat(layout.eyeRows) * eyeRowH }
         if layout.predRows > 0 && layout.eyeRows > 0 { height += max(4, gap) }
         if layout.predRows > 0 { height += predHdrH + CGFloat(layout.predRows) * predRowH }
-        return max(1, min(fullHeight, height))
+        return max(1, min(safeFullHeight, height))
     }
 
     // MARK: Render
@@ -1178,6 +1184,8 @@ final class OverlayWindow: NSWindowController {
 // MARK: - Settings Window
 
 final class SettingsWindow: NSWindowController, DragPickerDelegate {
+    private let minOverlayWidth: CGFloat = 220
+    private let minOverlayHeight: CGFloat = 120
     private var cfg     = OverlayConfig.load()
     private var picker: DragPicker?
     private var previewWin: NSWindow?
@@ -1337,11 +1345,15 @@ final class SettingsWindow: NSWindowController, DragPickerDelegate {
     }
 
     func dragPickerDidSelect(_ rect: CGRect) {
-        cfg.overlayX = rect.minX; cfg.overlayY = rect.minY
-        cfg.overlayWidth = rect.width; cfg.overlayHeight = rect.height
+        let clamped = CGRect(x: rect.minX,
+                             y: rect.minY,
+                             width: max(minOverlayWidth, rect.width),
+                             height: max(minOverlayHeight, rect.height))
+        cfg.overlayX = clamped.minX; cfg.overlayY = clamped.minY
+        cfg.overlayWidth = clamped.width; cfg.overlayHeight = clamped.height
         cfg.overlaySet = true; cfg.save()
         syncControls(); onChange?(cfg)
-        flashPreview(rect)
+        flashPreview(clamped)
     }
 
     private func flashPreview(_ rect: CGRect) {
