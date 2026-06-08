@@ -784,6 +784,10 @@ final class OverlayWindow: NSWindowController {
         var eyeRows = 0
         var showMessages = false
         var showMoveHint = false
+
+        var isEmpty: Bool {
+            predRows == 0 && eyeRows == 0 && !showMessages && !showMoveHint
+        }
     }
 
     init(cfg: OverlayConfig) {
@@ -823,7 +827,10 @@ final class OverlayWindow: NSWindowController {
         render(lastState)
     }
 
-    func show() { window?.makeKeyAndOrderFront(nil) }
+    func show() {
+        guard placementMode || !layout.isEmpty else { return }
+        window?.makeKeyAndOrderFront(nil)
+    }
     func hide() { window?.orderOut(nil) }
     func setPlacementMode(_ enabled: Bool) {
         placementMode = enabled
@@ -887,6 +894,11 @@ final class OverlayWindow: NSWindowController {
         let safeFullHeight = max(minOverlayHeight, CGFloat(r.height))
         let currentPreds = filteredPredictions(from: lastState)
         layout = desiredLayout(preds: currentPreds, state: lastState)
+        if layout.isEmpty && !placementMode {
+            win.orderOut(nil)
+            return
+        }
+
         let safeLayoutHeight = layoutHeight(for: layout, fullHeight: safeFullHeight)
         let winFrame = NSRect(x: r.minX,
                               y: screen.frame.height - r.minY - safeLayoutHeight,
