@@ -1,37 +1,21 @@
 # BetterNBB
 
-BetterNBB is a macOS overlay for Ninjabrain Bot. It reads Ninjabrain Bot's local API and shows the stronghold data in a lightweight always-on-top overlay.
+A macOS overlay for Ninjabrain Bot. Reads Ninjabrain Bot's local API and shows stronghold data in a lightweight always-on-top overlay.
+
+> **This project is archived and no longer maintained.**
 
 ## Features
 
-- Connects to Ninjabrain Bot through its local API.
-- Shows stronghold predictions:
-  - Overworld distance
-  - Location
-  - Certainty percentage
-  - Nether coordinates
-  - Nether distance
-  - Angle and turn direction
-- Shows eye throw data:
-  - Boat/status dot
-  - x
-  - z
-  - Angle
-  - Angle offset/correction
-  - Error
-- Color-codes useful values:
-  - Certainty percentage turns green/orange/red by confidence.
-  - Angle turn difference is green near 0 and shifts toward red as it gets farther away.
-  - Boat/status dot follows Ninjabrain Bot-style boat state colors when available.
-- Shows a movement hint based on the current player position and view direction.
-  - In the Overworld, it shows Overworld blocks first and Nether blocks in parentheses.
-  - In the Nether, it shows Nether blocks first and Overworld blocks in parentheses.
-  - Disclaimer: This setting can invalidate RSG runs.
-- Shows Ninjabrain Bot information/warning messages in the overlay.
-- Lets you choose which columns are visible.
-- Lets you choose the number of prediction and eye throw rows.
-- Lets you drag-select the overlay position and size.
-- Saves settings automatically.
+- Connects to Ninjabrain Bot through its local API
+- Shows stronghold predictions: distance, location, certainty %, Nether coordinates, Nether distance, angle, and turn direction
+- Shows eye throw data: boat/status dot, x, z, angle, angle offset, and error
+- Color-codes certainty % (green/orange/red) and angle turn difference (green near 0, shifts to red)
+- Movement hint based on current position and view direction, dimension-aware (can invalidate RSG runs)
+- Shows Ninjabrain Bot info/warning messages in the overlay
+- Choose which columns are visible
+- Set the number of prediction and eye throw rows
+- Drag to place and resize the overlay
+- Settings save automatically
 
 ## Requirements
 
@@ -40,139 +24,47 @@ BetterNBB is a macOS overlay for Ninjabrain Bot. It reads Ninjabrain Bot's local
 
 ## Download
 
-BetterNBB has three download options:
+### 1. DMG (recommended)
 
-1. DMG (recommended)
+Download the `.dmg` from the Releases page, open it, and drag `BetterNBB.app` to Applications.
 
-Download the `.dmg` from the GitHub Releases page, open it, and drag `BetterNBB.app` to the Applications folder.
+> **First launch:** macOS may show a security warning. Go to **System Settings → Privacy & Security → Security** and click **Open Anyway**.
 
-The first time you open BetterNBB, macOS may show a security warning. Confirm you want to open the app by going to "Privacy and Security" in System Settings, scrolling down to "Security," and clicking "Open Anyway."
+### 2. Direct `.app`
 
-2. Direct `.app` file
+Download `BetterNBB.app` from the release and drag it into Applications.
 
-Download `BetterNBB.app` directly (if provided in the release), then manually drag it into the Applications folder.
+### 3. Manual source build
 
-3. Manual `.swift` installer (requires Apple developer tools)
-
-This option requires Apple developer tools because the installer builds the app on your Mac. Before using the script installer, install either Xcode or Apple's Command Line Tools.
-
-Download the source installer `.zip`, unzip it, and double-click:
+Requires Xcode or Apple's Command Line Tools. Download and unzip the source installer, then double-click:
 
 ```text
 compilinstaller_doubleclicktoinstall.command
 ```
 
-The ZIP contains two files:
-
-```text
-BetterNBB.swift
-compilinstaller_doubleclicktoinstall.command
-```
-
-The installer compiles `BetterNBB.swift` into `BetterNBB.app`, moves the app to Applications, opens it, moves the installer command to Trash, and closes its Terminal window.
-
-If the compiler is missing, install Apple's Command Line Tools:
+If the compiler is missing:
 
 ```sh
 xcode-select --install
 ```
 
-## Enable The Ninjabrain Bot API
+## Enable the Ninjabrain Bot API
 
-BetterNBB only works if Ninjabrain Bot's local API is enabled.
+1. Open Ninjabrain Bot and go to its settings.
+2. Find and enable the API setting.
+3. Keep Ninjabrain Bot running.
 
-1. Open Ninjabrain Bot.
-2. Open Ninjabrain Bot settings.
-3. Find the API setting.
-4. Enable the API.
-5. Keep Ninjabrain Bot running.
+BetterNBB expects the API at `http://localhost:52533`. If BetterNBB says it is not connected, the most common cause is that the API setting is off.
 
-BetterNBB expects Ninjabrain Bot's API at:
+## Usage
 
-```text
-http://localhost:52533
-```
+1. Start Ninjabrain Bot and enable its API.
+2. Start BetterNBB.
+3. The settings window should show **Connected to Ninjabrain Bot**.
+4. Click **Drag to Place Overlay** and drag over the area where you want the overlay.
+5. Use the checkboxes to choose which columns and helper rows are visible.
 
-It uses these API endpoints:
-
-```text
-/api/v1/stronghold
-/api/v1/stronghold/events
-/api/v1/information-messages
-/api/v1/information-messages/events
-```
-
-If BetterNBB says it is not connected, the most common cause is that the Ninjabrain Bot API setting is off.
-
-## Version 1.2.0
-
-BetterNBB v1.2.0 improves overlay placement and expands window customization.
-
-Release notes:
-
-- Adds a better overlay positioning workflow and more window customization controls.
-
-## Version 1.1.0
-
-BetterNBB v1.1.0 adds automatic overlay resizing. BetterNBB now shrinks the overlay window to fit the information currently shown on screen. For example, if there is only one visible stronghold prediction row, the overlay shows only that row instead of leaving empty `--` rows.
-
-Release notes:
-
-- Automatically resizes the overlay window based on visible prediction rows, eye throw rows, messages, and movement hints.
-- Removes unused placeholder rows from the overlay when fewer predictions or eye throws are available.
-- Adds a DMG release option and a source installer ZIP option.
-
-## Version 1.0.0
-
-BetterNBB v1.0.0 is the first full release of the API-based overlay.
-
-Release notes:
-
-- BetterNBB is now packaged as a real macOS app.
-- The downloaded app works without installing Xcode or Apple command line developer tools.
-- Users can open `BetterNBB.app` directly instead of running the Swift source code.
-
-New in v1.0.0:
-
-- Uses Ninjabrain Bot's local API instead of OCR.
-- Live stronghold prediction overlay.
-- Configurable stronghold columns:
-  - `Dist.`
-  - `Location`
-  - `%`
-  - `Nether`
-  - `Nether Dist.`
-  - `Angle`
-- Configurable eye throw columns:
-  - `Boat dot`
-  - `x`
-  - `z`
-  - `Angle`
-  - `Offset`
-  - `Error`
-- Live angle direction display, including left/right turn amount.
-- Angle diff color coding from green near 0 to red farther away.
-- Nether distance support using Overworld distance divided by 8.
-- Movement hint row based on live player position and view direction.
-- Dimension-aware movement hints:
-  - Overworld players see Overworld blocks first with Nether blocks in parentheses.
-  - Nether players see Nether blocks first with Overworld blocks in parentheses.
-- Ninjabrain Bot information/warning message display.
-- Boat/status dot support.
-- Overlay drag placement and resizing.
-- Saved settings for overlay position, columns, row counts, and options.
-
-## How To Use
-
-1. Start Ninjabrain Bot.
-2. Enable Ninjabrain Bot's API in its settings.
-3. Start BetterNBB.
-4. The settings window should show `Connected to Ninjabrain Bot`.
-5. Click `Drag to Place Overlay`.
-6. Drag over the area where you want the overlay to appear.
-7. Use the checkboxes to choose which columns and helper rows are visible.
-
-Settings are saved automatically in:
+Settings are saved automatically to:
 
 ```text
 ~/Library/Application Support/BetterNBB/config.json
@@ -180,65 +72,47 @@ Settings are saved automatically in:
 
 ## Settings
 
-### Overlay Position
+**Overlay Position** — Use **Drag to Place Overlay** to set where the overlay appears and how large it is.
 
-Use `Drag to Place Overlay` to choose where the overlay should appear and how large it should be.
+**Row Counts** — Set the number of prediction rows and eye throw rows.
 
-### Row Counts
+**Stronghold Columns** — Dist., Location, %, Nether, Nether Dist., Angle
 
-- `Prediction rows`: number of stronghold prediction rows.
-- `Eye throw rows`: number of eye throw rows.
+**Eye Throw Columns** — Boat dot, x, z, Angle, Offset, Error
 
-### Stronghold Columns
-
-- `Dist.`
-- `Location`
-- `%`
-- `Nether`
-- `Nether Dist.`
-- `Angle`
-
-### Eye Throw Columns
-
-- `Boat dot`
-- `x`
-- `z`
-- `Angle`
-- `Offset`
-- `Error`
-
-### Options
-
-- `Hide 0% predictions`: hides prediction rows with effectively zero certainty.
-- `Show NBB messages`: shows information/warning messages from Ninjabrain Bot.
-- `Show movement hint (Can invalidate RSG runs)`: shows forward/back and left/right movement hints relative to the player view.
+**Options:**
+- **Hide 0% predictions** — hides rows with effectively zero certainty
+- **Show NBB messages** — shows info/warning messages from Ninjabrain Bot
+- **Show movement hint** — shows movement hints relative to player view *(can invalidate RSG runs)*
 
 ## Troubleshooting
 
-### BetterNBB Says It Is Not Connected
-
-Make sure:
-
-- Ninjabrain Bot is running.
-- Ninjabrain Bot's API setting is enabled.
-- Nothing is blocking `localhost:52533`.
-
-You can test the API in Terminal:
+**Not connected** — Make sure Ninjabrain Bot is running and its API is enabled. Test with:
 
 ```sh
 curl http://localhost:52533/api/v1/stronghold
 ```
 
-If that command fails, BetterNBB cannot connect either.
+**Overlay in the wrong place** — Click **Drag to Place Overlay** again.
 
-### The Overlay Is In The Wrong Place
+**Columns too crowded** — Make the overlay wider or disable columns you don't need.
 
-Open BetterNBB settings and click `Drag to Place Overlay` again.
+## Changelog
 
-### Some Columns Are Too Crowded
+### v1.2.0
+- Improved overlay positioning and expanded window customization
 
-Make the overlay wider or disable columns you do not need. BetterNBB scales the text down to fit the visible values, but a very small overlay can still become hard to read.
+### v1.1.0
+- Overlay now auto-resizes based on visible rows
+- Added DMG and source installer ZIP options
 
-### Movement Hint Warning
+### v1.0.0
+- First full release
+- API-based overlay replacing OCR
+- All core columns, color coding, movement hints, drag placement, and saved settings
 
-The movement hint is useful for practice or non-RSG contexts, but it can invalidate RSG runs.
+## License
+
+Copyright © 2026 ducky8x.
+
+This project is licensed under the GNU GPL v3.0. You're free to use, modify, and distribute this code, but any project that uses it must also be open source and released under the same license. See the [LICENSE](./LICENSE) file for details.
