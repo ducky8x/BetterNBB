@@ -2,7 +2,8 @@
 
 A macOS overlay for Ninjabrain Bot. Reads Ninjabrain Bot's local API and shows stronghold data in a lightweight always-on-top overlay.
 
-> **This project is archived and no longer maintained. For more updates, check [this repository]([url](https://github.com/ducky8x/Mac-Speedrunning-Tools)).**
+> **This project is archived and no longer maintained. For more updates, check this repository:**
+> **(https://github.com/ducky8x/Mac-Speedrunning-Tools**
 
 ## Features
 
